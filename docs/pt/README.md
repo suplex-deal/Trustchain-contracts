@@ -1,4 +1,4 @@
-# FaniLab-SmartContract 📦🔗
+# Trustchain-contracts 📦🔗
 
 > **FaniLab** é uma Plataforma de Logística e Depósito em Caução com Blockchain, projetada para conectar indivíduos e empresas que precisam transportar mercadorias com provedores de transporte disponíveis. Este repositório contém os contratos inteligentes Stellar Soroban que alimentam o sistema de depósito em caução blockchain usado pela plataforma de logística.
 
@@ -28,7 +28,7 @@ O projeto está organizado em seis contratos Rust e uma biblioteca compartilhada
 ## 📂 Estrutura do repositório
 
 ```text
-fanilab-smartcontract/
+trustchain-contracts/
 ├── Cargo.toml
 ├── CHANGELOG.md
 ├── README.md
@@ -91,8 +91,8 @@ Este documento é uma tradução do README em inglês e precisa permanecer alinh
 
 3. **Clone o repositório:**
    ```bash
-   git clone https://github.com/your-org/FaniLab-SmartContract.git
-   cd FaniLab-SmartContract
+   git clone https://github.com/suplex-deal/Trustchain-contracts.git
+   cd Trustchain-contracts
    ```
 
 4. **Construa os contratos:**
@@ -181,9 +181,9 @@ Este projeto usa GitHub Actions para CI/CD. O pipeline `.github/workflows/ci.yml
 
 ## 📊 Status do Projeto
 
-![CI Status](https://github.com/fanilab/FaniLab-SmartContract/workflows/Rust%20CI/badge.svg)
-![Security Audit](https://github.com/fanilab/FaniLab-SmartContract/workflows/Security%20Audit/badge.svg)
-[![codecov](https://codecov.io/gh/fanilab/FaniLab-SmartContract/branch/main/graph/badge.svg)](https://codecov.io/gh/fanilab/FaniLab-SmartContract)
+![CI Status](https://github.com/suplex-deal/Trustchain-contracts/workflows/Rust%20CI/badge.svg)
+![Security Audit](https://github.com/suplex-deal/Trustchain-contracts/workflows/Security%20Audit/badge.svg)
+[![codecov](https://codecov.io/gh/suplex-deal/Trustchain-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/suplex-deal/Trustchain-contracts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 - **Versão Atual**: 0.2.0

@@ -1,4 +1,4 @@
-# FaniLab-SmartContract 📦🔗
+# Trustchain-contracts 📦🔗
 
 > **FaniLab** is a Blockchain-Powered Logistics & Escrow Delivery Platform designed to connect individuals and businesses who need to transport goods with available transport providers. This repository contains the Stellar Soroban smart contracts powering the blockchain escrow system used by the logistics platform.
 
@@ -31,7 +31,7 @@
 FaniLab is composed of three main repositories:
 1. **FaniLab-Frontend**: Stack: Next.js + TypeScript + TailwindCSS
 2. **FaniLab-Backend**: Stack: Node.js + Express.js + TypeScript + MongoDB
-3. **FaniLab-SmartContract** *(This Repository)*: Stack: Stellar Soroban + Rust
+3. **Trustchain-contracts** *(This Repository)*: Stack: Stellar Soroban + Rust
 
 The smart contract repository powers the **blockchain escrow system** used by the logistics platform.
 
@@ -96,7 +96,7 @@ FaniLab generates revenue through the following streams:
 
 ## 🏗️ Smart Contract Architecture
 
-The FaniLab smart contracts are the backbone of the trustless logistics protocol. They are responsible for:
+This repository contains the smart contracts that power the trustless logistics protocol:
 - Escrow payment locking
 - Escrow payment release
 - Delivery verification
@@ -165,7 +165,7 @@ The contracts emit critical events for off-chain indexing:
 ## 📂 Repository Structure
 
 ```text
-fanilab-smartcontract/
+trustchain-contracts/
 ├── contracts/
 │   ├── escrow_contract/
 │   │   ├── lib.rs
@@ -247,8 +247,8 @@ fanilab-smartcontract/
 
 3. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-org/FaniLab-SmartContract.git
-   cd FaniLab-SmartContract
+   git clone https://github.com/suplex-deal/Trustchain-contracts.git
+   cd Trustchain-contracts
    ```
 
 4. **Build the contracts:**
@@ -337,9 +337,9 @@ This project uses GitHub Actions for CI/CD. The pipeline `.github/workflows/ci.y
 
 ## 📊 Project Status
 
-![CI Status](https://github.com/fanilabs/fanilab-smartcontract/workflows/Rust%20CI/badge.svg)
-![Security Audit](https://github.com/fanilabs/fanilab-smartcontract/workflows/Security%20Audit/badge.svg)
-[![codecov](https://codecov.io/gh/fanilabs/fanilab-smartcontract/branch/main/graph/badge.svg)](https://codecov.io/gh/fanilabs/fanilab-smartcontract)
+![CI Status](https://github.com/suplex-deal/Trustchain-contracts/workflows/Rust%20CI/badge.svg)
+![Security Audit](https://github.com/suplex-deal/Trustchain-contracts/workflows/Security%20Audit/badge.svg)
+[![codecov](https://codecov.io/gh/suplex-deal/Trustchain-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/suplex-deal/Trustchain-contracts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 - **Current Version**: 0.2.0

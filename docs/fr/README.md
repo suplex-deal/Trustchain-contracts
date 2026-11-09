@@ -1,4 +1,4 @@
-# FaniLab-SmartContract 📦🔗
+# Trustchain-contracts 📦🔗
 
 > **FaniLab** est une plateforme de logistique et d'escrow alimentée par la blockchain, conçue pour connecter les personnes et entreprises ayant besoin de transporter des marchandises avec les fournisseurs de transport disponibles. Ce référentiel contient les contrats intelligents Stellar Soroban qui alimentent le système d'escrow blockchain utilisé par la plateforme logistique.
 
@@ -28,7 +28,7 @@ Le projet est organisé en six contrats Rust et une bibliothèque partagée :
 ## 📂 Structure du dépôt
 
 ```text
-fanilab-smartcontract/
+trustchain-contracts/
 ├── Cargo.toml
 ├── CHANGELOG.md
 ├── README.md
@@ -91,8 +91,8 @@ Ce document est une traduction de la version anglaise du dépôt et doit rester 
 
 3. **Clonez le référentiel :**
    ```bash
-   git clone https://github.com/your-org/FaniLab-SmartContract.git
-   cd FaniLab-SmartContract
+   git clone https://github.com/suplex-deal/Trustchain-contracts.git
+   cd Trustchain-contracts
    ```
 
 4. **Construisez les contrats :**
@@ -181,9 +181,9 @@ Ce projet utilise GitHub Actions pour CI/CD. Le pipeline `.github/workflows/ci.y
 
 ## 📊 Statut du projet
 
-![CI Status](https://github.com/fanilab/FaniLab-SmartContract/workflows/Rust%20CI/badge.svg)
-![Security Audit](https://github.com/fanilab/FaniLab-SmartContract/workflows/Security%20Audit/badge.svg)
-[![codecov](https://codecov.io/gh/fanilab/FaniLab-SmartContract/branch/main/graph/badge.svg)](https://codecov.io/gh/fanilab/FaniLab-SmartContract)
+![CI Status](https://github.com/suplex-deal/Trustchain-contracts/workflows/Rust%20CI/badge.svg)
+![Security Audit](https://github.com/suplex-deal/Trustchain-contracts/workflows/Security%20Audit/badge.svg)
+[![codecov](https://codecov.io/gh/suplex-deal/Trustchain-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/suplex-deal/Trustchain-contracts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 - **Version actuelle** : 0.2.0

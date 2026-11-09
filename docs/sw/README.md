@@ -1,4 +1,4 @@
-# FaniLab-SmartContract 📦🔗
+# Trustchain-contracts 📦🔗
 
 > **FaniLab** ni Jukwaa la Uendeshaji na Uhifadhi wa Pesa Powered by Blockchain, inayoundwa kuunganisha watu na biashara zinazohitaji kusafirisha bidhaa na wafanyabizanishi wa usafiri walay vailable. Hazina hii ina Soroban Smart Contracts za Stellar ambazo zina nguvu za mfumo wa uhifadhi wa Pesa Blockchain unaotumiwa na jukwaa la uendeshaji.
 
@@ -28,7 +28,7 @@ Mradi umewekwa katika mikataba sita ya Rust na maktaba moja ya kawaida:
 ## 📂 Muundo wa hazina
 
 ```text
-fanilab-smartcontract/
+trustchain-contracts/
 ├── Cargo.toml
 ├── CHANGELOG.md
 ├── README.md
@@ -91,8 +91,8 @@ Hati hii ni tafsiri ya README ya Kiingereza na inapaswa kubaki inayofuata utekel
 
 3. **Nakili hazina:**
    ```bash
-   git clone https://github.com/your-org/FaniLab-SmartContract.git
-   cd FaniLab-SmartContract
+   git clone https://github.com/suplex-deal/Trustchain-contracts.git
+   cd Trustchain-contracts
    ```
 
 4. **Kuundwa kwa mkataba:**
@@ -181,9 +181,9 @@ Mradi huu unatumia GitHub Actions kwa CI/CD. Bomba `.github/workflows/ci.yml` li
 
 ## 📊 Hali ya Mradi
 
-![CI Status](https://github.com/fanilab/FaniLab-SmartContract/workflows/Rust%20CI/badge.svg)
-![Security Audit](https://github.com/fanilab/FaniLab-SmartContract/workflows/Security%20Audit/badge.svg)
-[![codecov](https://codecov.io/gh/fanilab/FaniLab-SmartContract/branch/main/graph/badge.svg)](https://codecov.io/gh/fanilab/FaniLab-SmartContract)
+![CI Status](https://github.com/suplex-deal/Trustchain-contracts/workflows/Rust%20CI/badge.svg)
+![Security Audit](https://github.com/suplex-deal/Trustchain-contracts/workflows/Security%20Audit/badge.svg)
+[![codecov](https://codecov.io/gh/suplex-deal/Trustchain-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/suplex-deal/Trustchain-contracts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 - **Toleo la Sasa**: 0.2.0
