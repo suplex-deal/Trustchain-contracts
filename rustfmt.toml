@@ -1,4 +1,4 @@
-# Rust formatting configuration for FaniLab Smart Contracts
+# Rust formatting configuration for Trustchain-contracts
 edition = "2021"
 max_width = 100
 hard_tabs = false

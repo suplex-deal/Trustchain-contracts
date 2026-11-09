@@ -1,4 +1,4 @@
-# Cargo-deny configuration for FaniLab Smart Contracts
+# Cargo-deny configuration for Trustchain-contracts
 # https://github.com/EmbarkStudios/cargo-deny
 
 [advisories]
