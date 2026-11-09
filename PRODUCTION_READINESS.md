@@ -2,7 +2,7 @@
 
 ## Status: 8/10 - In Progress (Reentrancy Coverage & External Audit Pending)
 
-FaniLab Smart Contracts are undergoing production hardening. The critical access-control and dispute-path issues identified in earlier reviews have been resolved. The remaining gap before mainnet is limited reentrancy test coverage and completion of a third-party security audit.
+Trustchain-contracts are undergoing production hardening. The critical access-control and dispute-path issues identified in earlier reviews have been resolved. The remaining gap before mainnet is limited reentrancy test coverage and completion of a third-party security audit.
 
 > **How this document is maintained:** Each ❌ and ⚠️ item below must be linked to an open GitHub issue. When an issue is closed, the corresponding item must be updated to ✅ or removed. The "Assessment Date" at the bottom must be updated at that time. A scoring section that is never revisited will drift; link to the tracker rather than restating it.
 
@@ -43,7 +43,7 @@ FaniLab Smart Contracts are undergoing production hardening. The critical access
 - [x] Reentrancy test: `test_release_escrow_rejects_reentrant_refund_via_fleet_get_payout_address`
 
 ### Remaining Gap
-- ⚠️ **Limited reentrancy coverage** — Reentrancy is tested at two call sites; other cross-contract paths are not yet covered. Issue [#238](https://github.com/fanilabs/fanilab-smartcontract/issues/238) tracks expanding this coverage.
+- ⚠️ **Limited reentrancy coverage** — Reentrancy is tested at two call sites; other cross-contract paths are not yet covered. Issue [#238](https://github.com/suplex-deal/Trustchain-contracts/issues/238) tracks expanding this coverage.
 
 ### Evidence
 - `docs/TESTING.md` — Comprehensive testing guide
@@ -68,9 +68,9 @@ FaniLab Smart Contracts are undergoing production hardening. The critical access
 - [x] Dispute resolution path structurally sound — issue #8 ✅
 
 ### Remaining Gaps
-- ⚠️ **Limited reentrancy coverage** — see Testing section and issue [#238](https://github.com/fanilabs/fanilab-smartcontract/issues/238)
+- ⚠️ **Limited reentrancy coverage** — see Testing section and issue [#238](https://github.com/suplex-deal/Trustchain-contracts/issues/238)
 - ⚠️ **No formal third-party security audit completed** — required before mainnet. See Phase 3 roadmap below.
-- ⚠️ **Open pre-production issues** — issues [#64](https://github.com/fanilabs/fanilab-smartcontract/issues/64), [#140](https://github.com/fanilabs/fanilab-smartcontract/issues/140), [#141](https://github.com/fanilabs/fanilab-smartcontract/issues/141), [#142](https://github.com/fanilabs/fanilab-smartcontract/issues/142), [#143](https://github.com/fanilabs/fanilab-smartcontract/issues/143) remain open and should be resolved or triaged before mainnet.
+- ⚠️ **Open pre-production issues** — issues [#64](https://github.com/suplex-deal/Trustchain-contracts/issues/64), [#140](https://github.com/suplex-deal/Trustchain-contracts/issues/140), [#141](https://github.com/suplex-deal/Trustchain-contracts/issues/141), [#142](https://github.com/suplex-deal/Trustchain-contracts/issues/142), [#143](https://github.com/suplex-deal/Trustchain-contracts/issues/143) remain open and should be resolved or triaged before mainnet.
 
 ### Evidence
 - `SECURITY.md` — Security policy
@@ -265,10 +265,10 @@ The items below are verified against the current codebase and the GitHub issue t
 **Limited Reentrancy Test Coverage**
 - Reentrancy is exercised at two call sites (`test_release_escrow_rejects_reentrant_call_during_settlement_swap`, `test_release_escrow_rejects_reentrant_refund_via_fleet_get_payout_address`).
 - Other cross-contract paths are not yet covered by a malicious-callback test.
-- Tracking: issue [#238](https://github.com/fanilabs/fanilab-smartcontract/issues/238)
+- Tracking: issue [#238](https://github.com/suplex-deal/Trustchain-contracts/issues/238)
 
 **Open Pre-Production Issues**
-- Issues [#64](https://github.com/fanilabs/fanilab-smartcontract/issues/64), [#140](https://github.com/fanilabs/fanilab-smartcontract/issues/140)–[#143](https://github.com/fanilabs/fanilab-smartcontract/issues/143) are open and should be resolved or explicitly triaged (accepted risk / deferred) before mainnet.
+- Issues [#64](https://github.com/suplex-deal/Trustchain-contracts/issues/64), [#140](https://github.com/suplex-deal/Trustchain-contracts/issues/140)–[#143](https://github.com/suplex-deal/Trustchain-contracts/issues/143) are open and should be resolved or explicitly triaged (accepted risk / deferred) before mainnet.
 
 ### Previously Listed — Now Resolved
 
@@ -358,7 +358,7 @@ The items below are verified against the current codebase and the GitHub issue t
 
 ## Conclusion
 
-**FaniLab Smart Contracts are production-capable on testnet; mainnet requires reentrancy test expansion and a third-party audit.**
+**Trustchain-contracts are production-capable on testnet; mainnet requires reentrancy test expansion and a third-party audit.**
 
 Current Assessment: **8/10** — Core functionality solid, prior critical security issues resolved, reentrancy coverage and external audit remain.
 

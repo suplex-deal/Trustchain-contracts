@@ -1,6 +1,6 @@
 # Monitoring and Observability
 
-Production monitoring guide for FaniLab Smart Contracts.
+Production monitoring guide for Trustchain-contracts.
 
 ## Overview
 

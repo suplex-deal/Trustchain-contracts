@@ -8,7 +8,7 @@
 
 When upgrading Soroban contracts, you may need to transform existing state to match new data structures. This guide provides tested patterns for performing these migrations safely.
 
-> **Note on `migrate_to_v2`:** The `migrate_to_v2` function pattern shown in this guide is **aspirational**. No production contract in this repository currently implements it or calls `update_current_contract_wasm`. Implementing migration tooling is tracked in issue [#81](https://github.com/fanilabs/fanilab-smartcontract/issues/81). The patterns below document the intended design so they can be implemented correctly when that work lands.
+> **Note on `migrate_to_v2`:** The `migrate_to_v2` function pattern shown in this guide is **aspirational**. No production contract in this repository currently implements it or calls `update_current_contract_wasm`. Implementing migration tooling is tracked in issue [#81](https://github.com/suplex-deal/Trustchain-contracts/issues/81). The patterns below document the intended design so they can be implemented correctly when that work lands.
 
 ## Migration Pattern
 

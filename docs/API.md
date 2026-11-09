@@ -1,6 +1,6 @@
-# FaniLab Smart Contract API Reference
+# Trustchain-contracts API Reference
 
-Complete API documentation for all FaniLab smart contracts.
+Complete API documentation for Trustchain-contracts.
 
 ## Table of Contents
 - [Indexing & Enumeration](#indexing--enumeration)

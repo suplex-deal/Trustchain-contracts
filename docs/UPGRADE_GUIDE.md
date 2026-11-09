@@ -4,7 +4,7 @@
 >
 > **Related document:** [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) — state migration patterns for breaking-change upgrades that alter data structures. If your upgrade changes any storage keys or struct layouts, read the Migration Guide alongside this one.
 
-Guide for upgrading FaniLab smart contracts on Stellar Soroban.
+Guide for upgrading Trustchain-contracts on Stellar Soroban.
 
 ## Overview
 
@@ -88,7 +88,7 @@ If your upgrade changes data structures or storage keys, a state migration funct
 
 > **See [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) for full migration patterns**, including example `migrate_to_v2` functions, batch migration, gradual migration, testing checklists, and recovery procedures.
 >
-> **Note:** No production contract in this repository currently implements `migrate_to_v2` or calls `update_current_contract_wasm`. This tooling is aspirational, tracked in issue [#81](https://github.com/fanilabs/fanilab-smartcontract/issues/81).
+> **Note:** No production contract in this repository currently implements `migrate_to_v2` or calls `update_current_contract_wasm`. This tooling is aspirational, tracked in issue [#81](https://github.com/suplex-deal/Trustchain-contracts/issues/81).
 
 A minimal migration call after deploying looks like:
 

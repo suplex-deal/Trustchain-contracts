@@ -1,6 +1,6 @@
-# FaniLab Smart Contract Deployment Guide
+# Trustchain-contracts Deployment Guide
 
-This guide covers the complete deployment process for FaniLab smart contracts on Stellar Soroban.
+This guide covers the complete deployment process for Trustchain-contracts on Stellar Soroban.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)

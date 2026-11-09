@@ -26,7 +26,7 @@ plain email is acceptable.
 
 **Option 2 — GitHub private vulnerability reporting (when enabled):**
 
-1. Open the [**Security Advisories**](https://github.com/fanilabs/fanilab-smartcontract/security/advisories/new) page for this repository.
+1. Open the [**Security Advisories**](https://github.com/suplex-deal/Trustchain-contracts/security/advisories/new) page for this repository.
 2. Click **Report a vulnerability**.
 3. Fill in the advisory form.
 
@@ -151,7 +151,7 @@ same thing:
 ## Security Contacts
 
 - **Email (private)**: security@fanilabs.io
-- **Private vulnerability reporting**: [GitHub Security Advisories](https://github.com/fanilabs/fanilab-smartcontract/security/advisories/new) (when enabled)
+- **Private vulnerability reporting**: [GitHub Security Advisories](https://github.com/suplex-deal/Trustchain-contracts/security/advisories/new) (when enabled)
 - **Discord**: FaniLab Official Server
 
 ## Additional Resources

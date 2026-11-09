@@ -2,7 +2,7 @@
 
 ## Overview
 
-FaniLab Smart Contracts implement a secure, transparent governance model designed for production operations on Stellar.
+Trustchain-contracts implement a secure, transparent governance model designed for production operations on Stellar.
 
 ## Admin Roles
 

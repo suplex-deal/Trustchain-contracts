@@ -1,4 +1,4 @@
-# FaniLab Smart Contract Architecture
+# Trustchain-contracts Architecture
 
 The FaniLab decentralized logistics economy is powered by a modular, secure, and upgradeable multi-contract architecture built on the Stellar Soroban network.
 

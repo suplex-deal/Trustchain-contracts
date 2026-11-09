@@ -1,6 +1,6 @@
 # Testing Guide
 
-Comprehensive testing guide for FaniLab Smart Contracts.
+Comprehensive testing guide for Trustchain-contracts.
 
 ## Overview
 

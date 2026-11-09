@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers performance optimization for FaniLab Smart Contracts on Stellar Soroban.
+This guide covers performance optimization for Trustchain-contracts on Stellar Soroban.
 
 ## Soroban Resource Model
 

@@ -1,6 +1,6 @@
 # Security Audit Checklist
 
-This document outlines the security audit checklist for FaniLab Smart Contracts on Stellar Soroban.
+This document outlines the security audit checklist for Trustchain-contracts on Stellar Soroban.
 
 ## Audit Status
 - **Last Full Audit**: Pending
@@ -249,7 +249,7 @@ cargo test proptest
 - **Low**: $100 - $1,000
 
 ### Reporting
-- Private vulnerability reporting: [GitHub Security Advisories](https://github.com/fanilabs/fanilab-smartcontract/security/advisories/new) ("Report a vulnerability")
+- Private vulnerability reporting: [GitHub Security Advisories](https://github.com/suplex-deal/Trustchain-contracts/security/advisories/new) ("Report a vulnerability")
 - Response SLA: 48 hours
 
 See [SECURITY.md](../SECURITY.md) for the full reporting process.

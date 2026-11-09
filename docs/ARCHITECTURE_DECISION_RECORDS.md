@@ -1,7 +1,7 @@
 # Architecture Decision Records (ADR)
 
 ## Overview
-This document records significant architecture decisions for FaniLab Smart Contracts.
+This document records significant architecture decisions for Trustchain-contracts.
 
 ## ADR-001: Soroban on Stellar
 
