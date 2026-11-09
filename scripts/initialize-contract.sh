@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# FaniLab Smart Contracts - Single Contract Initialization Script
+# Trustchain-contracts - Single Contract Initialization Script
 # Usage: ./initialize-contract.sh <contract_name> [network]
 
 set -e
@@ -31,7 +31,7 @@ if [ -z "$CONTRACT_NAME" ]; then
     exit 1
 fi
 
-echo "🔧 Initializing FaniLab Smart Contract"
+echo "🔧 Initializing Trustchain-contracts"
 echo "======================================"
 echo "Contract: $CONTRACT_NAME"
 echo "Network: $NETWORK"

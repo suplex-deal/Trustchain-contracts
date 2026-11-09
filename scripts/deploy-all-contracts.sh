@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# FaniLab Smart Contracts - Complete Deployment Script
+# Trustchain-contracts - Complete Deployment Script
 # Usage: ./deploy-all-contracts.sh [testnet|mainnet]
 
 set -e
@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT_FILE="$PROJECT_ROOT/contract-ids-$NETWORK.json"
 
-echo "🚀 FaniLab Smart Contract Deployment"
+echo "🚀 Trustchain-contracts Deployment"
 echo "=================================="
 echo "Network: $NETWORK"
 echo "Date: $(date)"

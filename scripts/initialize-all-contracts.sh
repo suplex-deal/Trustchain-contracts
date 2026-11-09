@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# FaniLab Smart Contracts - Initialization Script
+# Trustchain-contracts - Initialization Script
 # Usage: ./initialize-all-contracts.sh [testnet|mainnet]
 
 set -e
@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CONTRACT_IDS_FILE="$PROJECT_ROOT/contract-ids-$NETWORK.json"
 
-echo "🔧 Initializing FaniLab Smart Contracts"
+echo "🔧 Initializing Trustchain-contracts"
 echo "======================================"
 echo "Network: $NETWORK"
 echo ""

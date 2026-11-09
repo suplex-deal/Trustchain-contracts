@@ -1,7 +1,7 @@
 import { Keypair } from '@stellar/stellar-sdk';
 
 /**
- * Common types shared across FaniLab smart contracts
+ * Common types shared across Trustchain-contracts
  */
 
 export enum EscrowStatus {

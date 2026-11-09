@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# FaniLab Smart Contracts - Single Contract Deployment Script
+# Trustchain-contracts - Single Contract Deployment Script
 # Usage: ./deploy-contract.sh <contract_name> [network]
 
 set -e
@@ -45,7 +45,7 @@ if [ "$CONTRACT_KNOWN" = false ]; then
     exit 1
 fi
 
-echo "🚀 FaniLab Smart Contract Deployment" >&2
+echo "🚀 Trustchain-contracts Deployment" >&2
 echo "==================================" >&2
 echo "Contract: $CONTRACT_NAME" >&2
 echo "Network: $NETWORK" >&2

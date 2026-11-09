@@ -2,7 +2,7 @@
   "name": "@fanilab/sdk",
   "version": "0.2.0",
   "private": true,
-  "description": "TypeScript SDK for FaniLab smart contracts on Stellar Soroban",
+  "description": "TypeScript SDK for Trustchain-contracts on Stellar Soroban",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
