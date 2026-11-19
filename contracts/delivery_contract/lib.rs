@@ -126,6 +126,13 @@ pub enum DeliveryError {
     /// (currently: the `Active -> InTransit` transition). See Issue #298.
     EscrowNotLocked = 6,
     InvalidIndexKind = 7,
+    /// No peer-contract address change is waiting for confirmation.
+    NoPendingContractChange = 8,
+    /// A peer-contract address change is still within its review period.
+    ContractChangeTimelockNotElapsed = 9,
+    /// The driver being assigned differs from the driver an already-funded
+    /// escrow for this delivery is committed to pay.
+    EscrowDriverMismatch = 10,
 }
 
 mod constants {
@@ -735,6 +742,12 @@ impl DeliveryContract {
     /// escrow funding. The escrow precondition is enforced one step later, at
     /// `mark_in_transit` — the point where the driver physically takes
     /// custody of the package and the commitment becomes real.
+    ///
+    /// Driver binding: escrow creation may precede assignment, so when an
+    /// escrow is already funded for this delivery the assigned driver must be
+    /// the escrow's driver (`DeliveryError::EscrowDriverMismatch` otherwise).
+    /// This keeps the party doing the delivery and the party being paid for
+    /// it the same, whichever of funding and assignment happens first.
     #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
     pub fn assign_driver(env: Env, caller: Address, delivery_id: DeliveryId, driver: Address) {
         caller.require_auth();
@@ -795,6 +808,23 @@ impl DeliveryContract {
 
         validate_transition(delivery.status, DeliveryStatus::Active)
             .unwrap_or_else(|_| panic_with_error!(&env, TrustchainError::InvalidState));
+
+        // Bind the assignment to an already-funded escrow's payout target.
+        let escrow_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowContract)
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NotInitialized));
+        let escrow_driver: Option<Address> = env.invoke_contract(
+            &escrow_address,
+            &Symbol::new(&env, "get_escrow_driver"),
+            soroban_sdk::vec![&env, delivery_id.value().into_val(&env)],
+        );
+        if let Some(escrow_driver) = escrow_driver {
+            if escrow_driver != driver {
+                panic_with_error!(&env, DeliveryError::EscrowDriverMismatch);
+            }
+        }
 
         delivery.driver = Some(driver.clone());
         delivery.status = DeliveryStatus::Active;

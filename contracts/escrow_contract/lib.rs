@@ -2,7 +2,8 @@
 
 use shared_types::{
     escrow_key, events, is_admin, ttl, DeliveryRecord, DeliveryStatus, EscrowRecord, EscrowStatus,
-    TrustchainError, PendingPeerContractChange, ProtocolConfig, StorageKey,
+    PendingPeerContractChange, ProtocolConfig, StorageKey, TrustchainError,
+    HIGH_VALUE_DISPUTE_THRESHOLD,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
@@ -239,41 +240,59 @@ fn get_holdback_window(env: &Env) -> u64 {
 }
 
 /// Return the configured delivery contract address, if any.
-/// Used by `create_escrow` / `create_escrows_batch` to optionally verify that
-/// a delivery record exists and matches the supplied parties (Issue #295).
+/// Used by `create_escrow` / `create_escrows_batch` to verify that a delivery
+/// record exists and matches the supplied parties (Issue #295).
 fn get_delivery_contract(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::DeliveryContract)
 }
 
+/// Whether the admin has explicitly opted this deployment into standalone
+/// mode (escrows not backed by a delivery contract). Defaults to `false`.
+fn is_standalone_mode(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::StandaloneMode)
+        .unwrap_or(false)
+}
+
+/// Verify an escrow against its delivery record before any funds move.
+///
 /// When the delivery contract is configured, cross-call it to verify that:
 /// 1. The delivery exists (panics with DeliveryNotFound if not).
-/// 2. The supplied `recipient` matches the delivery record's recipient.
-/// 3. The supplied `driver` matches the delivery record's driver, OR the
+/// 2. The escrow `sender` matches the delivery record's sender. Without this a
+///    third party could fund (and so own the refund/cancel path of) another
+///    sender's delivery ID, splitting escrow ownership from delivery ownership.
+/// 3. The supplied `recipient` matches the delivery record's recipient.
+/// 4. The supplied `driver` matches the delivery record's driver, OR the
 ///    delivery has no driver yet (the driver field is `None`, meaning
 ///    `assign_driver` hasn't been called yet — the ordering constraint is
 ///    documented: escrow creation may precede or follow driver assignment, but
 ///    if a driver is already assigned its address must agree with the escrow).
 ///
-/// When no delivery contract is configured the check is skipped entirely so
-/// existing deployments and tests that don't wire up the delivery contract
-/// continue to work unchanged — matching the optional integration pattern used
-/// by the fleet-management and settlement integrations.
+/// When no delivery contract is configured the call **fails closed** with
+/// `EscrowError::DeliveryContractNotConfigured`, unless the admin has
+/// explicitly enabled standalone mode (`set_standalone_mode`). Previously an
+/// absent delivery contract silently skipped verification, so a partially
+/// configured deployment (e.g. delivery contract still pending its timelock)
+/// admitted orphaned or mismatched escrows despite the delivery-based
+/// lifecycle assumptions elsewhere. Standalone mode can only be enabled while
+/// no delivery contract is active, and confirming one turns it off.
 ///
 /// Cross-contract call cost note: this adds one `get_delivery` call to the hot
 /// escrow-creation path. The integrity benefit — preventing orphaned escrows
 /// and mismatched-party escrows that permanently consume a delivery_id — is
-/// judged to outweigh the ~1 instruction overhead for deployments that enable
-/// the check. Deployments that cannot afford the cost simply leave the delivery
-/// contract unconfigured (Issue #295).
-fn verify_delivery_if_configured(
+/// judged to outweigh the cost (Issue #295).
+fn verify_delivery(
     env: &Env,
     delivery_id: u64,
+    sender: &Address,
     recipient: &Address,
     driver: &Address,
 ) {
     let delivery_addr = match get_delivery_contract(env) {
         Some(addr) => addr,
-        None => return,
+        None if is_standalone_mode(env) => return,
+        None => panic_with_error!(env, EscrowError::DeliveryContractNotConfigured),
     };
 
     let delivery: DeliveryRecord = env.invoke_contract(
@@ -282,12 +301,15 @@ fn verify_delivery_if_configured(
         soroban_sdk::vec![env, shared_types::DeliveryId::from(delivery_id).into_val(env)],
     );
 
-    if delivery.recipient != *recipient {
+    // All three parties must agree with the delivery record before any funds
+    // move: sender and recipient strictly, driver when one is assigned.
+    if delivery.sender != *sender || delivery.recipient != *recipient {
         panic_with_error!(env, EscrowError::InvalidParties);
     }
 
     // If a driver is already assigned, it must match. If unassigned (None),
-    // the check is deferred — the driver may be assigned after escrow creation.
+    // the check is deferred to `delivery_contract::assign_driver`, which
+    // rejects any driver other than this escrow's (see `get_escrow_driver`).
     if let Some(assigned_driver) = &delivery.driver {
         if *assigned_driver != *driver {
             panic_with_error!(env, EscrowError::InvalidDriver);
@@ -321,9 +343,9 @@ fn get_fleet_management_contract(env: &Env) -> Option<Address> {
 /// configured `delivery_contract`, or a protocol admin, who keeps a recovery
 /// path for escrows that would otherwise be stuck.
 ///
-/// Following the optional-integration pattern already used by
-/// `verify_delivery_if_configured` (Issue #295), an unconfigured deployment
-/// falls back to the legacy `record.recipient` rule. Without a delivery
+/// An unconfigured deployment (only reachable for escrows created in explicit
+/// standalone mode, see `set_standalone_mode`) falls back to the legacy
+/// `record.recipient` rule. Without a delivery
 /// contract there is no confirmation state machine for a recipient to strand,
 /// so the bypass has nothing to strand; deployments that do run the delivery
 /// lifecycle are protected as soon as they call `set_delivery_contract`.
@@ -452,9 +474,7 @@ fn settle_escrow_funds(
         driver_amount,
         fleet_management_addr.as_ref(),
         record.fleet_id,
-        env.storage()
-            .persistent()
-            .get(&DataKey::EscrowPayoutAddress(delivery_id)),
+        load_payout_snapshot(env, delivery_id),
     );
 
     if platform_fee > 0 {
@@ -541,6 +561,7 @@ fn save_escrow(env: &Env, delivery_id: u64, record: &EscrowRecord) {
         ttl::LEDGER_TTL_THRESHOLD,
         ttl::LEDGER_TTL_EXTEND_TO,
     );
+    extend_payout_snapshot_ttl(env, delivery_id);
 }
 
 fn load_escrow(env: &Env, delivery_id: u64) -> EscrowRecord {
@@ -555,7 +576,49 @@ fn load_escrow(env: &Env, delivery_id: u64) -> EscrowRecord {
         ttl::LEDGER_TTL_THRESHOLD,
         ttl::LEDGER_TTL_EXTEND_TO,
     );
+    extend_payout_snapshot_ttl(env, delivery_id);
     record
+}
+
+/// Persist the funding-time fleet payout route for an escrow.
+///
+/// The snapshot lives under its own persistent key
+/// (`DataKey::EscrowPayoutAddress`), so it has its own TTL. It must be written
+/// before `save_escrow` or renewed alongside it so the two never drift apart.
+fn save_payout_snapshot(env: &Env, delivery_id: u64, payout_address: &Address) {
+    let key = DataKey::EscrowPayoutAddress(delivery_id);
+    env.storage().persistent().set(&key, payout_address);
+    env.storage().persistent().extend_ttl(
+        &key,
+        ttl::LEDGER_TTL_THRESHOLD,
+        ttl::LEDGER_TTL_EXTEND_TO,
+    );
+}
+
+fn load_payout_snapshot(env: &Env, delivery_id: u64) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::EscrowPayoutAddress(delivery_id))
+}
+
+/// Keep the payout snapshot alive exactly as long as its escrow record.
+///
+/// Invariant: whenever an escrow record's TTL is renewed (every
+/// `save_escrow` / `load_escrow`), its payout snapshot — if one was taken —
+/// is renewed with the same threshold and target. Previously only the record
+/// was renewed, so on a long-lived escrow the snapshot could be archived
+/// first; `payout_driver` would then see `None` and silently fall back to
+/// resolving the route from *live* fleet state instead of the route committed
+/// at funding time.
+fn extend_payout_snapshot_ttl(env: &Env, delivery_id: u64) {
+    let key = DataKey::EscrowPayoutAddress(delivery_id);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().extend_ttl(
+            &key,
+            ttl::LEDGER_TTL_THRESHOLD,
+            ttl::LEDGER_TTL_EXTEND_TO,
+        );
+    }
 }
 
 #[contracttype]
@@ -571,13 +634,17 @@ enum DataKey {
     FleetManagementContract,
     DisputeResolutionContract,
     IdentityReputationContract,
-    /// Optional delivery_contract address used by create_escrow /
-    /// create_escrows_batch to cross-verify that a delivery record exists and
-    /// that recipient / driver match before locking funds (Issue #295).
-    /// When absent the check is skipped so existing deployments and tests that
-    /// do not wire up the delivery contract continue to work unchanged.
+    /// delivery_contract address used by create_escrow / create_escrows_batch
+    /// to cross-verify that a delivery record exists and that sender /
+    /// recipient / driver match before locking funds (Issue #295). When absent,
+    /// escrow creation fails closed unless `StandaloneMode` is enabled.
     DeliveryContract,
     PendingDeliveryContract,
+    /// Explicit admin opt-in to run without a delivery contract. Absent means
+    /// `false`: escrow creation fails closed until a delivery contract is
+    /// confirmed or this is enabled. Cleared when a delivery contract is
+    /// confirmed and cannot be re-enabled while one is active.
+    StandaloneMode,
     /// Track total locked value per token
     TotalLocked(Address),
     /// Track sender volume (number of completed deliveries)
@@ -632,6 +699,15 @@ pub enum EscrowError {
     /// A batch operation (`create_escrows_batch`) exceeded `MAX_BATCH_SIZE`.
     BatchTooLarge = 12,
     InvalidSlippageTolerance = 13,
+    /// No peer-contract address change is waiting for confirmation.
+    NoPendingContractChange = 14,
+    /// A peer-contract address change is still within its review period.
+    ContractChangeTimelockNotElapsed = 15,
+    /// A configuration value is outside its permitted range.
+    InvalidState = 16,
+    /// Escrow creation was attempted with no active delivery contract while
+    /// standalone mode is disabled.
+    DeliveryContractNotConfigured = 17,
 }
 
 #[contracttype]
@@ -951,7 +1027,7 @@ impl EscrowContract {
             .remove(&DataKey::FleetManagementContract);
         extend_instance_ttl(&env);
         env.events().publish(
-            (Symbol::new(&env, "fleet_management_contract_cleared"),),
+            (Symbol::new(&env, "fleet_contract_cleared"),),
             (admin, env.ledger().timestamp()),
         );
     }
@@ -990,11 +1066,9 @@ impl EscrowContract {
     /// `create_escrows_batch` to cross-verify that a delivery record exists and
     /// that the supplied recipient/driver match before locking funds (Issue #295).
     ///
-    /// The check is **optional**: when no delivery contract is configured the
-    /// verification is skipped entirely, so existing deployments and tests that
-    /// do not wire up the delivery contract continue to work unchanged — matching
-    /// the optional integration pattern used by the fleet-management and
-    /// settlement integrations.
+    /// Until a delivery contract is confirmed, escrow creation fails closed
+    /// with `DeliveryContractNotConfigured` unless the admin explicitly enabled
+    /// standalone mode via `set_standalone_mode`.
     ///
     /// Only an admin may propose this change. It takes effect after a
     /// three-day review period and separate confirmation.
@@ -1015,7 +1089,7 @@ impl EscrowContract {
         );
         extend_instance_ttl(&env);
         env.events().publish(
-            (Symbol::new(&env, "delivery_contract_change_proposed"),),
+            (Symbol::new(&env, "delivery_contract_proposed"),),
             (delivery_contract, activates_at),
         );
     }
@@ -1036,6 +1110,9 @@ impl EscrowContract {
         env.storage()
             .instance()
             .remove(&DataKey::PendingDeliveryContract);
+        // Activation is one-way: once delivery verification is live the
+        // deployment can no longer run in standalone mode.
+        env.storage().instance().remove(&DataKey::StandaloneMode);
         extend_instance_ttl(&env);
         env.events().publish(
             (Symbol::new(&env, "delivery_contract_updated"),),
@@ -1049,10 +1126,40 @@ impl EscrowContract {
             .get(&DataKey::PendingDeliveryContract)
     }
 
-    /// Return the configured delivery contract address, if any.
-    /// `None` means delivery verification is disabled (see `set_delivery_contract`).
+    /// Return the configured delivery contract address, if any. `None` means
+    /// escrow creation fails closed unless standalone mode is enabled.
     pub fn get_delivery_contract(env: Env) -> Option<Address> {
         get_delivery_contract(&env)
+    }
+
+    /// Explicitly opt this deployment in or out of standalone mode, in which
+    /// escrows are created without a backing delivery contract.
+    ///
+    /// Standalone mode is off by default, so a deployment that has not wired
+    /// a delivery contract rejects escrow creation instead of silently
+    /// skipping delivery verification. It may only be *enabled* while no
+    /// delivery contract is active: once one is confirmed (which also clears
+    /// this flag) the deployment fails closed permanently. Disabling is
+    /// always allowed.
+    #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
+    pub fn set_standalone_mode(env: Env, admin: Address, enabled: bool) {
+        admin.require_auth();
+        require_admin(&env, &admin);
+        if enabled && get_delivery_contract(&env).is_some() {
+            panic_with_error!(&env, TrustchainError::InvalidState);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::StandaloneMode, &enabled);
+        extend_instance_ttl(&env);
+        env.events().publish(
+            (Symbol::new(&env, "standalone_mode_set"),),
+            (admin, enabled),
+        );
+    }
+
+    pub fn is_standalone_mode(env: Env) -> bool {
+        is_standalone_mode(&env)
     }
 
     #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
@@ -1179,11 +1286,11 @@ impl EscrowContract {
             panic_with_error!(&env, EscrowError::InvalidToken);
         }
         validate_token_contract(&env, &token);
-        // Issue #295: when a delivery contract is configured, cross-call it to
-        // confirm the delivery exists and that the supplied recipient/driver
-        // match the delivery record. Skipped when unconfigured so existing
-        // deployments and tests continue to work unchanged.
-        verify_delivery_if_configured(&env, delivery_id, &recipient, &driver);
+        // Issue #295: cross-call the delivery contract to confirm the delivery
+        // exists and that the supplied sender, recipient and driver match the
+        // delivery record. Fails closed when no delivery contract is active
+        // unless standalone mode was explicitly enabled.
+        verify_delivery(&env, delivery_id, &sender, &recipient, &driver);
         let payout_address: Option<Address> = if let (Some(fleet_addr), Some(fid)) =
             (get_fleet_management_contract(&env), fleet_id)
         {
@@ -1200,6 +1307,11 @@ impl EscrowContract {
         let record_token_clone = token.clone();
         let created_at = env.ledger().timestamp();
         let expires_at = created_at.saturating_add(constants::DEFAULT_ESCROW_EXPIRY_SECONDS);
+        // Write the snapshot before the record so `save_escrow` renews both
+        // with the same TTL from the first ledger onwards.
+        if let Some(payout_address) = payout_address {
+            save_payout_snapshot(&env, delivery_id, &payout_address);
+        }
         save_escrow(
             &env,
             delivery_id,
@@ -1219,16 +1331,6 @@ impl EscrowContract {
                 fleet_id,
             },
         );
-        if let Some(payout_address) = payout_address {
-            let payout_key = DataKey::EscrowPayoutAddress(delivery_id);
-            env.storage().persistent().set(&payout_key, &payout_address);
-            env.storage().persistent().extend_ttl(
-                &payout_key,
-                ttl::LEDGER_TTL_THRESHOLD,
-                ttl::LEDGER_TTL_EXTEND_TO,
-            );
-        }
-
         index_push(&env, &sender, 0, delivery_id);
         index_push(&env, &recipient, 1, delivery_id);
         index_push(&env, &driver, 2, delivery_id);
@@ -1360,9 +1462,9 @@ impl EscrowContract {
                 if env.storage().persistent().has(&escrow_key(delivery_id)) {
                     panic_with_error!(&env, TrustchainError::DuplicateDelivery);
                 }
-                // Issue #295: same optional delivery-verification check as
-                // create_escrow — skipped when no delivery contract is configured.
-                verify_delivery_if_configured(&env, delivery_id, &recipient, &driver);
+                // Issue #295: same delivery-verification check as create_escrow,
+                // including the fail-closed rule when no delivery contract is set.
+                verify_delivery(&env, delivery_id, &sender, &recipient, &driver);
 
                 // Issue #378: snapshot the fleet payout address at creation time,
                 // mirroring create_escrow. Without this, batch-created escrows
@@ -1397,6 +1499,12 @@ impl EscrowContract {
                 let created_at = env.ledger().timestamp();
                 let expires_at =
                     created_at.saturating_add(constants::DEFAULT_ESCROW_EXPIRY_SECONDS);
+                // Persist the snapshotted payout address so settle_escrow_funds
+                // uses it instead of resolving live at settlement time. Written
+                // before the record so `save_escrow` renews both together.
+                if let Some(addr) = payout_address {
+                    save_payout_snapshot(&env, delivery_id, &addr);
+                }
                 save_escrow(
                     &env,
                     delivery_id,
@@ -1417,17 +1525,6 @@ impl EscrowContract {
                     },
                 );
 
-                // Persist the snapshotted payout address so settle_escrow_funds
-                // uses it instead of resolving live at settlement time.
-                if let Some(addr) = payout_address {
-                    let payout_key = DataKey::EscrowPayoutAddress(delivery_id);
-                    env.storage().persistent().set(&payout_key, &addr);
-                    env.storage().persistent().extend_ttl(
-                        &payout_key,
-                        ttl::LEDGER_TTL_THRESHOLD,
-                        ttl::LEDGER_TTL_EXTEND_TO,
-                    );
-                }
                 /*
                 sender_escrows.push_back(delivery_id);
                 recipient_escrows.push_back(delivery_id);
@@ -1998,9 +2095,7 @@ impl EscrowContract {
                 net_driver_amount,
                 fleet_management.as_ref(),
                 record.fleet_id,
-                env.storage()
-                    .persistent()
-                    .get(&DataKey::EscrowPayoutAddress(delivery_id)),
+                load_payout_snapshot(&env, delivery_id),
             );
         }
         if platform_fee > 0 {
@@ -2118,6 +2213,20 @@ impl EscrowContract {
     /// panic for freshly created, unfunded deliveries (Issue #395).
     pub fn has_escrow(env: Env, delivery_id: u64) -> bool {
         env.storage().persistent().has(&escrow_key(delivery_id))
+    }
+
+    /// Driver the escrow for `delivery_id` is committed to pay, or `None` when
+    /// no escrow has been funded for it.
+    ///
+    /// `delivery_contract::assign_driver` uses this to keep the delivery's
+    /// assigned driver bound to the funded payout target: an escrow may be
+    /// created before a driver is assigned, so the assignment is the point
+    /// where the two must be reconciled.
+    pub fn get_escrow_driver(env: Env, delivery_id: u64) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get::<_, EscrowRecord>(&escrow_key(delivery_id))
+            .map(|record| record.driver)
     }
 
     pub fn get_escrow(env: Env, delivery_id: u64) -> EscrowRecord {

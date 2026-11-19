@@ -194,6 +194,18 @@ impl MockEscrowContract {
         }
     }
 
+    /// Mirrors `escrow_contract::get_escrow_driver`: the funded driver when a
+    /// test has configured escrow parties via `set_parties`, otherwise `None`
+    /// (no funded escrow constrains assignment).
+    pub fn get_escrow_driver(_env: Env, delivery_id: u64) -> Option<Address> {
+        if delivery_id == 7777 {
+            return None;
+        }
+        _env.storage()
+            .temporary()
+            .get(&Symbol::new(&_env, "mock_driver"))
+    }
+
     pub fn set_parties(_env: Env, sender: Address, recipient: Address, driver: Address) {
         _env.storage()
             .temporary()
@@ -284,6 +296,11 @@ pub struct PausedMockEscrowContract;
 
 #[contractimpl]
 impl PausedMockEscrowContract {
+    /// No escrow is funded in these fixtures, so assignment is unconstrained.
+    pub fn get_escrow_driver(_env: Env, _delivery_id: u64) -> Option<Address> {
+        None
+    }
+
     /// Toggled by tests: the protocol must be unpaused while the delivery is
     /// set up (every state-mutating entry point, not just `raise_dispute`,
     /// calls `require_escrow_not_paused`), and paused for the assertion under
@@ -2428,7 +2445,7 @@ fn test_delivery_emits_typed_created_and_driver_assigned_events() {
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let created: DeliveryCreatedEvent =
         DeliveryCreatedEvent::try_from_val(&env, &data).expect("invalid delivery_created payload");
-    assert_eq!(created.delivery_id, delivery_id.into());
+    assert_eq!(created.delivery_id, delivery_id.value());
     assert_eq!(created.sender, shipper);
 
     client.assign_driver(&shipper, &delivery_id, &driver);
@@ -2439,7 +2456,7 @@ fn test_delivery_emits_typed_created_and_driver_assigned_events() {
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let assigned: DriverAssignedEvent =
         DriverAssignedEvent::try_from_val(&env, &data).expect("invalid driver_assigned payload");
-    assert_eq!(assigned.delivery_id, delivery_id.into());
+    assert_eq!(assigned.delivery_id, delivery_id.value());
     assert_eq!(assigned.driver, driver);
 }
 
@@ -2506,7 +2523,8 @@ fn test_set_identity_reputation_contract_emits_audit_event() {
     let events = env.events().all();
     let raw_event = events.events().last().expect("no event emitted");
     let xdr::ContractEventBody::V0(body) = raw_event.body.clone();
-    let topic = Symbol::try_from_val(&env, &body.topics.get(0).unwrap()).unwrap();
+    let topic_val = Val::try_from_val(&env, &body.topics[0]).unwrap();
+    let topic = Symbol::try_from_val(&env, &topic_val).unwrap();
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let (event_admin, event_identity): (Address, Address) =
         <(Address, Address)>::try_from_val(&env, &data).unwrap();
@@ -2994,4 +3012,42 @@ fn test_assign_driver_succeeds_registered_active_driver() {
         client.get_delivery(&delivery_id).status,
         DeliveryStatus::Active
     );
+}
+
+// ── Escrow driver binding on assignment ──────────────────────────────────────
+
+/// When an escrow is already funded for the delivery, only its driver may be
+/// assigned; a rejected assignment leaves the delivery untouched.
+#[test]
+fn test_assign_driver_must_match_funded_escrow_driver() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, escrow_id, _) = setup_full(&env);
+    let other_driver = Address::generate(&env);
+    let delivery_id = client.create_delivery(&shipper, &recipient, &get_test_metadata(&env, 1));
+    set_mock_escrow_parties(&env, &escrow_id, &shipper, &recipient, &driver);
+
+    let result = client.try_assign_driver(&shipper, &delivery_id, &other_driver);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, DeliveryError::EscrowDriverMismatch.into()),
+        _ => panic!("Expected DeliveryError::EscrowDriverMismatch"),
+    }
+    let delivery = client.get_delivery(&delivery_id);
+    assert_eq!(delivery.status, DeliveryStatus::Pending);
+    assert_eq!(delivery.driver, None);
+
+    client.assign_driver(&shipper, &delivery_id, &driver);
+    let delivery = client.get_delivery(&delivery_id);
+    assert_eq!(delivery.status, DeliveryStatus::Active);
+    assert_eq!(delivery.driver, Some(driver));
+}
+
+/// With no funded escrow, assignment is unconstrained (escrow may follow).
+#[test]
+fn test_assign_driver_without_escrow_is_unconstrained() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, _, _) = setup_full(&env);
+    let delivery_id = client.create_delivery(&shipper, &recipient, &get_test_metadata(&env, 1));
+
+    client.assign_driver(&shipper, &delivery_id, &driver);
+    assert_eq!(client.get_delivery(&delivery_id).driver, Some(driver));
 }

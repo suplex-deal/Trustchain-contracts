@@ -316,12 +316,35 @@ When configured, both creation entry points:
 2. Verify the supplied `recipient` matches the delivery record.
 3. Verify the supplied `driver` matches the delivery record's driver **if** a
    driver has already been assigned (`assign_driver` has been called). If the
-   driver field is still `None` the check is deferred — escrow creation may
-   precede driver assignment.
+   driver field is still `None` the check is deferred to `assign_driver`,
+   which rejects any driver other than the funded escrow's driver
+   (`EscrowDriverMismatch`).
 
-When **not** configured (i.e. `get_delivery_contract` returns `None`), both
-functions behave exactly as before this change, making the check fully opt-in
-for existing deployments.
+When **not** configured (i.e. `get_delivery_contract` returns `None`, which
+includes the period while a proposed address is still in its timelock), both
+functions **fail closed** with `DeliveryContractNotConfigured` unless the admin
+has explicitly enabled standalone mode (see `set_standalone_mode`).
+
+#### `set_standalone_mode`
+Explicitly opt a deployment in or out of standalone mode, in which escrows are
+created without a backing delivery contract and delivery verification is
+skipped. Off by default.
+
+**Parameters:**
+- `admin: Address` - Protocol admin
+- `enabled: bool` - Whether standalone mode is on
+
+**Authorization:** Admin only
+
+**Errors:**
+- `Unauthorized` - Caller is not the admin
+- `InvalidState` - `enabled = true` while a delivery contract is active
+
+**Events:** `standalone_mode_set` with `(admin, enabled)`
+
+Activation is one-way: `confirm_delivery_contract` clears standalone mode, and
+it cannot be re-enabled while a delivery contract is active. `is_standalone_mode`
+returns the current flag.
 
 **Design note:** the check adds one `get_delivery` cross-contract call to the
 escrow-creation hot path. The integrity benefit — preventing orphaned escrows and
@@ -340,7 +363,7 @@ leave the delivery contract unconfigured.
 - `Unauthorized` - Caller is not the configured admin
 - `NotInitialized` - Contract has not been initialised
 
-**Events:** `delivery_contract_change_proposed`; confirmation emits
+**Events:** `delivery_contract_proposed`; confirmation emits
 `delivery_contract_updated`.
 
 #### `confirm_delivery_contract`
@@ -1202,6 +1225,12 @@ Assign a driver to a delivery.
 - `InvalidState` - Delivery not in Pending state
 - `ProviderNotFound` - KYC enforcement enabled, identity contract configured, and the driver has no profile
 - `Unauthorized` - KYC enforcement enabled and `driver.kyc_verified` is `false`
+- `EscrowDriverMismatch` - An escrow is already funded for this delivery and `driver` is not its driver
+
+**Escrow driver binding:** escrow creation may precede assignment. When an
+escrow already exists for the delivery, `assign_driver` reads its driver via
+`escrow_contract::get_escrow_driver` and only that driver may be assigned, so
+the assigned driver and the payout target cannot diverge.
 
 **Events:** `driver_assigned`
 
@@ -2648,7 +2677,7 @@ active address changes only after three days and a separate
 **Errors:**
 - `Unauthorized` - Caller is not the stored admin
 
-**Events:** `delivery_contract_change_proposed`; confirmation emits
+**Events:** `delivery_contract_proposed`; confirmation emits
 `delivery_contract_updated` - `(admin, delivery_contract)`
 
 #### `confirm_delivery_contract`
