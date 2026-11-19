@@ -1133,6 +1133,8 @@ fn test_integration_resolve_dispute_split_funds() {
     escrow_client.init(&admin, &token, &0);
     escrow_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);
     delivery_client.init(&admin, &escrow_contract_id);
+    // No identity contract here: opt into no-identity mode explicitly.
+    delivery_client.set_identity_optional(&admin, &true);
     // Issue #444: delivery::raise_dispute only accepts the configured dispute
     // contract, so the real integration flows must wire it up.
     delivery_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);
@@ -1239,6 +1241,8 @@ fn test_integration_resolve_dispute_refund_sender_decreases_reputation() {
     escrow_client.init(&admin, &token, &0);
     escrow_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);
     delivery_client.init(&admin, &escrow_contract_id);
+    // No identity contract here: opt into no-identity mode explicitly.
+    delivery_client.set_identity_optional(&admin, &true);
     // Issue #444: delivery::raise_dispute only accepts the configured dispute
     // contract, so the real integration flows must wire it up.
     delivery_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);
@@ -1414,6 +1418,8 @@ fn test_integration_resolve_dispute_pay_driver_increases_reputation() {
     escrow_client.init(&admin, &token, &0);
     escrow_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);
     delivery_client.init(&admin, &escrow_contract_id);
+    // No identity contract here: opt into no-identity mode explicitly.
+    delivery_client.set_identity_optional(&admin, &true);
     // Issue #444: delivery::raise_dispute only accepts the configured dispute
     // contract, so the real integration flows must wire it up.
     delivery_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);
@@ -1688,6 +1694,8 @@ fn test_configured_values_apply_to_split_and_pay_driver_paths() {
     escrow_client.init(&admin, &token, &0);
     escrow_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);
     delivery_client.init(&admin, &escrow_contract_id);
+    // No identity contract here: opt into no-identity mode explicitly.
+    delivery_client.set_identity_optional(&admin, &true);
     // Issue #444: delivery::raise_dispute only accepts the configured dispute
     // contract, so the real integration flows must wire it up.
     delivery_client.set_dispute_resolution_contract(&admin, &dispute_resolution_id);

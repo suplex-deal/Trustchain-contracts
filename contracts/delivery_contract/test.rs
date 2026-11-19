@@ -332,6 +332,9 @@ fn setup_full(
     // `raise_dispute` is restricted to the configured dispute contract
     // (Issue #444), so the fixture registers one.
     client.set_dispute_resolution_contract(&shipper, &dispute_id);
+    // Bind the mock escrow to the fixture's parties so `confirm_delivery`'s
+    // escrow party check sees a correctly funded escrow by default.
+    set_mock_escrow_parties(env, &escrow_id, &shipper, &recipient, &driver);
     (client, shipper, driver, recipient, escrow_id, reputation_id)
 }
 
@@ -600,7 +603,7 @@ fn test_happy_path_full_lifecycle() {
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
 
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
     client.confirm_delivery(&recipient, &delivery_id);
 
@@ -694,7 +697,7 @@ fn test_cancellation_after_assign() {
     let (client, shipper, driver, recipient, escrow_id, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     client.cancel_delivery(&shipper, &delivery_id);
 
@@ -721,7 +724,7 @@ fn test_dispute_path() {
     let (client, shipper, driver, recipient, escrow_id, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.raise_dispute(&dispute_of(&client), &delivery_id);
@@ -750,11 +753,11 @@ fn test_invalid_assign_when_delivered() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
     client.confirm_delivery(&recipient, &delivery_id);
 
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 }
 
 #[test]
@@ -776,7 +779,7 @@ fn test_invalid_confirm_without_transit() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     client.confirm_delivery(&recipient, &delivery_id);
 }
@@ -788,7 +791,7 @@ fn test_invalid_dispute_when_cancelled() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.cancel_delivery(&shipper, &delivery_id);
 
     client.raise_dispute(&dispute_of(&client), &delivery_id);
@@ -806,7 +809,7 @@ fn test_cancel_delivery_rejected_once_disputed() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.raise_dispute(&dispute_of(&client), &delivery_id);
@@ -825,7 +828,7 @@ fn test_invalid_cancel_when_delivered() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
     client.confirm_delivery(&recipient, &delivery_id);
 
@@ -853,7 +856,7 @@ fn test_unauthorized_mark_in_transit() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     let unauthorized = Address::generate(&env);
     client.mark_in_transit(&unauthorized, &delivery_id);
@@ -878,7 +881,7 @@ fn test_mark_in_transit_rejects_missing_escrow() {
             .set(&DataKey::DeliveryCounter, &7776u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     // No escrow exists for this delivery → mark_in_transit must reject.
     client.mark_in_transit(&driver, &delivery_id);
@@ -900,7 +903,7 @@ fn test_mark_in_transit_rejects_refunded_escrow() {
             .set(&DataKey::DeliveryCounter, &8887u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     client.mark_in_transit(&driver, &delivery_id);
 }
@@ -913,7 +916,7 @@ fn test_mark_in_transit_succeeds_with_locked_escrow() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     client.mark_in_transit(&driver, &delivery_id);
 
@@ -935,7 +938,7 @@ fn test_mark_in_transit_escrow_check_does_not_mask_authorization() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     let stranger = Address::generate(&env);
     client.mark_in_transit(&stranger, &delivery_id);
@@ -948,7 +951,7 @@ fn test_unauthorized_confirm_delivery() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     let unauthorized = Address::generate(&env);
@@ -998,7 +1001,7 @@ fn test_unauthorized_cancel_delivery() {
     let recipient = Address::generate(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     let unauthorized = Address::generate(&env);
     client.cancel_delivery(&unauthorized, &delivery_id);
@@ -1012,7 +1015,7 @@ fn test_dispute_then_resolve_increments_reputation() {
     let (client, shipper, driver, recipient, _, reputation_id) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.raise_dispute(&dispute_of(&client), &delivery_id);
@@ -1044,7 +1047,7 @@ fn test_dispute_then_resolve_penalizes_driver() {
     let (client, shipper, driver, recipient, _, reputation_id) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.raise_dispute(&dispute_of(&client), &delivery_id);
@@ -1101,7 +1104,7 @@ fn test_reject_confirm_delivery_from_driver() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.confirm_delivery(&driver, &delivery_id);
@@ -1119,7 +1122,7 @@ fn test_confirm_delivery_rejects_driver_matching_recipient() {
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     env.as_contract(&client.address, || {
@@ -1541,7 +1544,7 @@ fn test_confirm_delivery_calls_increase_reputation() {
     let (client, shipper, driver, recipient, _, reputation_id) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.confirm_delivery(&recipient, &delivery_id);
@@ -1595,7 +1598,7 @@ fn test_raise_dispute_on_delivered_delivery_updates_status() {
 
     let metadata = get_test_metadata(&env, 1u64);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.raise_dispute(&dispute_of(&client), &delivery_id);
@@ -1620,7 +1623,7 @@ fn test_confirm_delivery_state_rollback_on_escrow_failure() {
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     // This should panic due to escrow failure (delivery_id 9999)
@@ -1640,7 +1643,7 @@ fn test_delivery_state_unchanged_after_confirm_escrow_failure() {
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     let delivery_before = client.get_delivery(&delivery_id);
@@ -1679,7 +1682,7 @@ fn test_cancel_delivery_state_rollback_on_escrow_failure() {
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     // This should panic due to escrow failure (delivery_id 9999)
     client.cancel_delivery(&shipper, &delivery_id);
@@ -1698,7 +1701,7 @@ fn test_delivery_state_unchanged_after_cancel_escrow_failure() {
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
 
     let delivery_before = client.get_delivery(&delivery_id);
     assert_eq!(delivery_before.status, DeliveryStatus::Active);
@@ -1731,7 +1734,7 @@ fn test_raise_dispute_state_rollback_on_escrow_failure() {
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     // This should panic due to escrow failure (delivery_id 9999)
@@ -1751,7 +1754,7 @@ fn test_delivery_state_unchanged_after_raise_dispute_escrow_failure() {
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     let delivery_before = client.get_delivery(&delivery_id);
@@ -2024,12 +2027,16 @@ fn test_update_delivery_metadata_overwrites_caller_supplied_delivery_id() {
 
 #[test]
 #[should_panic(expected = "5")]
-fn test_reject_update_metadata_after_driver_assigned() {
+fn test_reject_update_metadata_after_in_transit() {
+    // Issue #478 deliberately allows metadata edits while the delivery is
+    // `Active` (driver assigned); edits are rejected once the driver has
+    // taken custody and the delivery is `InTransit`.
     let env = Env::default();
     let (client, shipper, driver, recipient, _, _) = setup_full(&env);
     let metadata = get_test_metadata(&env, 1);
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
+    client.mark_in_transit(&driver, &delivery_id);
 
     use shared_types::{CargoCategory, CargoDescriptor};
     let updated_metadata = DeliveryMetadata {
@@ -2125,7 +2132,7 @@ fn test_on_time_delivery_confirmation() {
     };
 
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     env.ledger().with_mut(|l| {
@@ -2277,7 +2284,7 @@ fn test_late_delivery_confirmation() {
     };
 
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     env.ledger().with_mut(|l| {
@@ -2317,7 +2324,7 @@ fn test_early_delivery_confirmation() {
     };
 
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
-    client.assign_driver(&driver, &delivery_id, &driver);
+    client.assign_driver(&shipper, &delivery_id, &driver);
     client.mark_in_transit(&driver, &delivery_id);
 
     client.raise_dispute(&dispute_of(&client), &delivery_id);
@@ -2428,7 +2435,7 @@ fn test_delivery_emits_typed_created_and_driver_assigned_events() {
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let created: DeliveryCreatedEvent =
         DeliveryCreatedEvent::try_from_val(&env, &data).expect("invalid delivery_created payload");
-    assert_eq!(created.delivery_id, delivery_id.into());
+    assert_eq!(created.delivery_id, delivery_id.value());
     assert_eq!(created.sender, shipper);
 
     client.assign_driver(&shipper, &delivery_id, &driver);
@@ -2439,7 +2446,7 @@ fn test_delivery_emits_typed_created_and_driver_assigned_events() {
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let assigned: DriverAssignedEvent =
         DriverAssignedEvent::try_from_val(&env, &data).expect("invalid driver_assigned payload");
-    assert_eq!(assigned.delivery_id, delivery_id.into());
+    assert_eq!(assigned.delivery_id, delivery_id.value());
     assert_eq!(assigned.driver, driver);
 }
 
@@ -2469,6 +2476,7 @@ fn test_get_identity_reputation_contract_returns_none_before_configuration() {
 fn test_mark_in_transit_succeeds_without_identity_contract() {
     let env = Env::default();
     let (client, admin) = setup_bare(&env);
+    client.set_identity_optional(&admin, &true);
     let driver = Address::generate(&env);
     let recipient = Address::generate(&env);
     let delivery_id = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
@@ -2506,7 +2514,8 @@ fn test_set_identity_reputation_contract_emits_audit_event() {
     let events = env.events().all();
     let raw_event = events.events().last().expect("no event emitted");
     let xdr::ContractEventBody::V0(body) = raw_event.body.clone();
-    let topic = Symbol::try_from_val(&env, &body.topics.get(0).unwrap()).unwrap();
+    let topic_val = Val::try_from_val(&env, body.topics.get(0).unwrap()).unwrap();
+    let topic = Symbol::try_from_val(&env, &topic_val).unwrap();
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let (event_admin, event_identity): (Address, Address) =
         <(Address, Address)>::try_from_val(&env, &data).unwrap();
@@ -2532,7 +2541,7 @@ fn test_index_contents_unchanged_after_delivery_completion() {
     assert_eq!(recipient_before.len(), 2);
 
     // Assign, mark in transit, and confirm first delivery
-    client.assign_driver(&driver, &first_id, &driver);
+    client.assign_driver(&shipper, &first_id, &driver);
     client.mark_in_transit(&driver, &first_id);
     client.confirm_delivery(&recipient, &first_id);
 
@@ -2669,7 +2678,7 @@ fn test_reclaim_delivery_expired_escrow_rejected_for_delivered_state() {
     let (client, _admin, driver, recipient, _escrow_id, _) = setup_full(&env);
 
     let did = client.create_delivery(&_admin, &recipient, &get_test_metadata(&env, 5));
-    client.assign_driver(&driver, &did, &driver);
+    client.assign_driver(&_admin, &did, &driver);
     client.mark_in_transit(&driver, &did);
     client.confirm_delivery(&recipient, &did);
     assert_eq!(client.get_delivery(&did).status, DeliveryStatus::Delivered);
@@ -2687,7 +2696,7 @@ fn test_reclaim_delivery_expired_escrow_rollback_on_escrow_failure() {
     let (client, _admin, driver, recipient, _escrow_id, _) = setup_full(&env);
 
     let did = client.create_delivery(&_admin, &recipient, &get_test_metadata(&env, 1));
-    client.assign_driver(&driver, &did, &driver);
+    client.assign_driver(&_admin, &did, &driver);
     client.mark_in_transit(&driver, &did);
     assert_eq!(client.get_delivery(&did).status, DeliveryStatus::InTransit);
 
@@ -2994,4 +3003,235 @@ fn test_assign_driver_succeeds_registered_active_driver() {
         client.get_delivery(&delivery_id).status,
         DeliveryStatus::Active
     );
+}
+
+// ── confirm_delivery escrow party binding ────────────────────────────────────
+
+fn in_transit_delivery(
+    env: &Env,
+    client: &DeliveryContractClient,
+    shipper: &Address,
+    recipient: &Address,
+    driver: &Address,
+) -> DeliveryId {
+    let delivery_id = client.create_delivery(shipper, recipient, &get_test_metadata(env, 1));
+    client.assign_driver(shipper, &delivery_id, driver);
+    client.mark_in_transit(driver, &delivery_id);
+    delivery_id
+}
+
+fn assert_confirm_rejected_for_party_mismatch(
+    env: &Env,
+    client: &DeliveryContractClient,
+    escrow_id: &Address,
+    recipient: &Address,
+    delivery_id: DeliveryId,
+) {
+    let result = client.try_confirm_delivery(recipient, &delivery_id);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, DeliveryError::EscrowPartyMismatch.into()),
+        other => panic!("Expected DeliveryError::EscrowPartyMismatch, got {:?}", other),
+    }
+    let delivery = client.get_delivery(&delivery_id);
+    assert_eq!(delivery.status, DeliveryStatus::InTransit);
+    assert_eq!(delivery.delivered_at, None);
+    let holdback: Option<u64> = env.as_contract(escrow_id, || {
+        env.storage().temporary().get(&Symbol::new(env, "holdback"))
+    });
+    assert_eq!(holdback, None, "escrow must not move to holdback");
+}
+
+#[test]
+fn test_confirm_delivery_succeeds_when_escrow_parties_match() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, _escrow_id, _) = setup_full(&env);
+    let delivery_id = in_transit_delivery(&env, &client, &shipper, &recipient, &driver);
+
+    client.confirm_delivery(&recipient, &delivery_id);
+
+    assert_eq!(client.get_delivery(&delivery_id).status, DeliveryStatus::Delivered);
+    let (_, escrow, synced) = client.get_combined_state(&delivery_id);
+    assert_eq!(escrow.unwrap().driver, driver);
+    assert!(synced);
+}
+
+#[test]
+fn test_confirm_delivery_rejects_escrow_paying_a_different_driver() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, escrow_id, _) = setup_full(&env);
+    let delivery_id = in_transit_delivery(&env, &client, &shipper, &recipient, &driver);
+    let other_driver = Address::generate(&env);
+    set_mock_escrow_parties(&env, &escrow_id, &shipper, &recipient, &other_driver);
+
+    assert_confirm_rejected_for_party_mismatch(&env, &client, &escrow_id, &recipient, delivery_id);
+}
+
+#[test]
+fn test_confirm_delivery_rejects_escrow_with_different_sender() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, escrow_id, _) = setup_full(&env);
+    let delivery_id = in_transit_delivery(&env, &client, &shipper, &recipient, &driver);
+    set_mock_escrow_parties(&env, &escrow_id, &Address::generate(&env), &recipient, &driver);
+
+    assert_confirm_rejected_for_party_mismatch(&env, &client, &escrow_id, &recipient, delivery_id);
+}
+
+#[test]
+fn test_confirm_delivery_rejects_escrow_with_different_recipient() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, escrow_id, _) = setup_full(&env);
+    let delivery_id = in_transit_delivery(&env, &client, &shipper, &recipient, &driver);
+    set_mock_escrow_parties(&env, &escrow_id, &shipper, &Address::generate(&env), &driver);
+
+    assert_confirm_rejected_for_party_mismatch(&env, &client, &escrow_id, &recipient, delivery_id);
+}
+
+#[test]
+fn test_confirm_delivery_party_mismatch_does_not_credit_reputation() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, escrow_id, reputation_id) = setup_full(&env);
+    let delivery_id = in_transit_delivery(&env, &client, &shipper, &recipient, &driver);
+    set_mock_escrow_parties(&env, &escrow_id, &shipper, &recipient, &Address::generate(&env));
+
+    let _ = client.try_confirm_delivery(&recipient, &delivery_id);
+
+    let credited: Option<Address> = env.as_contract(&reputation_id, || {
+        env.storage().temporary().get(&Symbol::new(&env, "rep_inc"))
+    });
+    assert_eq!(credited, None);
+}
+
+// ── assign_driver identity integration policy ────────────────────────────────
+
+fn assert_identity_not_configured<T: core::fmt::Debug>(
+    result: Result<Result<T, soroban_sdk::ConversionError>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
+) {
+    match result {
+        Err(Ok(err)) => assert_eq!(err, DeliveryError::IdentityNotConfigured.into()),
+        other => panic!("Expected DeliveryError::IdentityNotConfigured, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_identity_optional_defaults_to_false() {
+    let env = Env::default();
+    let (client, _admin) = setup_bare(&env);
+    assert!(!client.get_identity_optional());
+}
+
+#[test]
+fn test_assign_driver_fails_closed_without_identity_contract() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    let recipient = Address::generate(&env);
+    let delivery_id = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+
+    assert_identity_not_configured(client.try_assign_driver(
+        &admin,
+        &delivery_id,
+        &Address::generate(&env),
+    ));
+    let delivery = client.get_delivery(&delivery_id);
+    assert_eq!(delivery.status, DeliveryStatus::Pending);
+    assert_eq!(delivery.driver, None);
+}
+
+#[test]
+fn test_assign_driver_allowed_in_explicit_no_identity_mode() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    client.set_identity_optional(&admin, &true);
+    assert!(client.get_identity_optional());
+    let recipient = Address::generate(&env);
+    let driver = Address::generate(&env);
+    let delivery_id = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+
+    client.assign_driver(&admin, &delivery_id, &driver);
+
+    let delivery = client.get_delivery(&delivery_id);
+    assert_eq!(delivery.status, DeliveryStatus::Active);
+    assert_eq!(delivery.driver, Some(driver));
+}
+
+#[test]
+fn test_disabling_no_identity_mode_fails_closed_again() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    client.set_identity_optional(&admin, &true);
+    client.set_identity_optional(&admin, &false);
+    let recipient = Address::generate(&env);
+    let delivery_id = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+
+    assert_identity_not_configured(client.try_assign_driver(
+        &admin,
+        &delivery_id,
+        &Address::generate(&env),
+    ));
+}
+
+#[test]
+fn test_require_kyc_fails_closed_without_identity_even_in_no_identity_mode() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    client.set_identity_optional(&admin, &true);
+    client.set_require_kyc(&admin, &true);
+    let recipient = Address::generate(&env);
+    let delivery_id = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+
+    assert_identity_not_configured(client.try_assign_driver(
+        &admin,
+        &delivery_id,
+        &Address::generate(&env),
+    ));
+}
+
+#[test]
+fn test_no_identity_mode_does_not_bypass_configured_identity_checks() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, _, reputation_id) = setup_full(&env);
+    client.set_identity_optional(&shipper, &true);
+    env.as_contract(&reputation_id, || {
+        env.storage()
+            .temporary()
+            .set(&Symbol::new(&env, "unregistered"), &true);
+    });
+    let delivery_id = client.create_delivery(&shipper, &recipient, &get_test_metadata(&env, 1));
+
+    let result = client.try_assign_driver(&shipper, &delivery_id, &driver);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::ProviderNotFound.into()),
+        other => panic!("Expected TrustchainError::ProviderNotFound, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_set_identity_optional_requires_admin() {
+    let env = Env::default();
+    let (client, _admin) = setup_bare(&env);
+    let result = client.try_set_identity_optional(&Address::generate(&env), &true);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::Unauthorized.into()),
+        other => panic!("Expected TrustchainError::Unauthorized, got {:?}", other),
+    }
+    assert!(!client.get_identity_optional());
+}
+
+#[test]
+fn test_set_identity_optional_emits_event() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    client.set_identity_optional(&admin, &true);
+
+    let events = env.events().all();
+    let raw_event = events.events().last().expect("no event emitted");
+    let xdr::ContractEventBody::V0(body) = raw_event.body.clone();
+    let topic_val = Val::try_from_val(&env, body.topics.get(0).unwrap()).unwrap();
+    let topic = Symbol::try_from_val(&env, &topic_val).unwrap();
+    let data = Val::try_from_val(&env, &body.data).unwrap();
+    let (event_admin, optional): (Address, bool) =
+        <(Address, bool)>::try_from_val(&env, &data).unwrap();
+
+    assert_eq!(topic, Symbol::new(&env, "identity_optional_updated"));
+    assert_eq!(event_admin, admin);
+    assert!(optional);
 }

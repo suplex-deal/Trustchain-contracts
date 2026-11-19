@@ -83,6 +83,17 @@ export class IdentityReputationClient {
     return Boolean(await this.invoker.call('has_user_profile', [address(user)], options));
   }
 
+  /**
+   * Extend the TTL of an existing driver profile so it is not archived while
+   * the driver is inactive. Permissionless and content-preserving. If the
+   * profile is already archived, the transaction's simulation adds the
+   * restore; the profile's history is kept. Rejects with `ProviderNotFound`
+   * when the driver never registered.
+   */
+  async extendDriverProfileTtl(driver: string, options?: ContractInvokeOptions): Promise<DriverProfile> {
+    return decodeDriverProfile(await this.invoker.call('extend_driver_profile_ttl', [address(driver)], options));
+  }
+
   async getDriverProfile(driver: string, options?: ContractInvokeOptions): Promise<DriverProfile> {
     return decodeDriverProfile(await this.invoker.call('get_driver_profile', [address(driver)], options));
   }

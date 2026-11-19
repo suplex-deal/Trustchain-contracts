@@ -16,6 +16,7 @@ export const EscrowErrorCodes = {
   InvalidDriver: 10,
   InvalidParties: 11,
   BatchTooLarge: 12,
+  InvalidSlippageTolerance: 13,
 } as const;
 
 export interface InitParams {

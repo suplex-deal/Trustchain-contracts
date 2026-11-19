@@ -53,7 +53,23 @@ fn setup_test() -> (Env, FleetManagementContractClient<'static>, Address) {
 
     let admin = Address::generate(&env);
     client.init(&admin);
+    // Most tests exercise a standalone fleet with no identity contract, so
+    // they opt into no-identity mode explicitly. Tests of the fail-closed
+    // default use `setup_without_identity_policy`.
+    client.set_identity_optional(&admin, &true);
 
+    (env, client, admin)
+}
+
+/// Like `setup_test`, but leaves the identity policy at its default
+/// (no-identity mode disabled).
+fn setup_without_identity_policy() -> (Env, FleetManagementContractClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(FleetManagementContract, ());
+    let client = FleetManagementContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
     (env, client, admin)
 }
 
@@ -179,7 +195,7 @@ fn test_admin_reassign_fleet_owner_resets_signers() {
     assert_eq!(client.get_fleet(&fleet_id).owner, owner);
     assert_eq!(
         client
-            .get_pending_fleet_owner_reassignment(&fleet_id)
+            .get_pending_owner_reassignment(&fleet_id)
             .unwrap()
             .new_owner,
         new_owner
@@ -187,7 +203,7 @@ fn test_admin_reassign_fleet_owner_resets_signers() {
     let attacker = Address::generate(&env);
     let wrong_acceptor = client.try_accept_fleet_owner_reassignment(&attacker, &fleet_id);
     match wrong_acceptor {
-        Err(Ok(err)) => assert_eq!(err, FleetError::Unauthorized.into()),
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::Unauthorized.into()),
         _ => panic!("Expected only the proposed owner to accept reassignment"),
     }
     assert_eq!(client.get_fleet(&fleet_id).owner, owner);
@@ -215,7 +231,7 @@ fn test_admin_reassign_fleet_owner_requires_admin() {
     }
 
     assert_eq!(client.get_fleet(&fleet_id).owner, owner);
-    assert_eq!(client.get_pending_fleet_owner_reassignment(&fleet_id), None);
+    assert_eq!(client.get_pending_owner_reassignment(&fleet_id), None);
 }
 
 #[test]
@@ -1762,6 +1778,8 @@ fn test_escrow_payout_routes_through_fleet_treasury() {
     let fleet_client = FleetManagementContractClient::new(&env, &fleet_contract_id);
     let fleet_admin = Address::generate(&env);
     fleet_client.init(&fleet_admin);
+    // No identity contract here: opt into no-identity mode explicitly.
+    fleet_client.set_identity_optional(&fleet_admin, &true);
 
     let escrow_contract_id = env.register(EscrowContract, ());
     let escrow_client = escrow_contract::EscrowContractClient::new(&env, &escrow_contract_id);
@@ -1885,7 +1903,7 @@ fn test_full_protocol_happy_path() {
         &Some(fleet_record_id),
     );
 
-    delivery.assign_driver(&driver, &delivery_record_id, &driver);
+    delivery.assign_driver(&sender, &delivery_record_id, &driver);
     delivery.mark_in_transit(&driver, &delivery_record_id);
     delivery.confirm_delivery(&recipient, &delivery_record_id);
 
@@ -2230,10 +2248,10 @@ fn test_rejected_invitation_leaves_no_slot_and_can_be_retried() {
     assert_eq!(client.get_fleet(&fleet_id).total_active_drivers, 1);
 }
 
-/// Deployments that never configure an identity contract keep the pre-#451
-/// behaviour: accepting an invite is not gated on registration at all.
+/// Deployments that never configure an identity contract and have opted into
+/// no-identity mode (as `setup_test` does) are not gated on registration.
 #[test]
-fn test_accept_invite_unrestricted_without_identity_contract() {
+fn test_accept_invite_unrestricted_in_explicit_no_identity_mode() {
     let (env, client, _admin) = setup_test();
     let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
 
@@ -2245,4 +2263,115 @@ fn test_accept_invite_unrestricted_without_identity_contract() {
         client.get_driver_fleet_status(&fleet_id, &driver),
         Some(DriverFleetStatus::Active)
     );
+}
+
+// ── Identity integration policy (no-identity mode) ───────────────────────────
+
+fn assert_identity_not_configured<T: core::fmt::Debug>(
+    result: Result<Result<T, soroban_sdk::ConversionError>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
+) {
+    match result {
+        Err(Ok(err)) => assert_eq!(err, FleetError::IdentityNotConfigured.into()),
+        other => panic!("Expected FleetError::IdentityNotConfigured, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_identity_optional_defaults_to_false() {
+    let (_env, client, _admin) = setup_without_identity_policy();
+    assert!(!client.get_identity_optional());
+}
+
+#[test]
+fn test_add_driver_fails_closed_without_identity_contract() {
+    let (env, client, _admin) = setup_without_identity_policy();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+    let driver = Address::generate(&env);
+
+    assert_identity_not_configured(client.try_add_driver_to_fleet(
+        &owner,
+        &fleet_id,
+        &driver,
+        &no_co_signers(&env),
+    ));
+    assert_eq!(client.get_driver_fleet_status(&fleet_id, &driver), None);
+}
+
+/// An invite issued while no-identity mode was on cannot be accepted once
+/// the admin turns it off without configuring an identity contract.
+#[test]
+fn test_accept_invite_fails_closed_without_identity_contract() {
+    let (env, client, admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+    let driver = Address::generate(&env);
+    client.add_driver_to_fleet(&owner, &fleet_id, &driver, &no_co_signers(&env));
+    client.set_identity_optional(&admin, &false);
+
+    assert_identity_not_configured(client.try_accept_fleet_invite(&fleet_id, &driver));
+    assert_eq!(
+        client.get_driver_fleet_status(&fleet_id, &driver),
+        Some(DriverFleetStatus::Pending)
+    );
+    assert_eq!(client.get_fleet(&fleet_id).total_active_drivers, 0);
+}
+
+/// A proposed identity contract does not count until confirmed: while it is
+/// still inside its timelock, acceptance fails closed.
+#[test]
+fn test_accept_invite_fails_closed_while_identity_change_is_pending() {
+    let (env, client, admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+    let driver = Address::generate(&env);
+    client.add_driver_to_fleet(&owner, &fleet_id, &driver, &no_co_signers(&env));
+    client.set_identity_optional(&admin, &false);
+    client.set_identity_contract(&admin, &env.register(IdentityReputationContract, ()));
+
+    assert_identity_not_configured(client.try_accept_fleet_invite(&fleet_id, &driver));
+}
+
+#[test]
+fn test_no_identity_mode_does_not_bypass_configured_identity() {
+    let (env, client, admin) = setup_test();
+    assert!(client.get_identity_optional());
+    let _identity = setup_with_identity(&env, &client, &admin);
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let result = client.try_add_driver_to_fleet(
+        &owner,
+        &fleet_id,
+        &Address::generate(&env),
+        &no_co_signers(&env),
+    );
+    match result {
+        Err(Ok(err)) => assert_eq!(err, FleetError::DriverNotRegistered.into()),
+        other => panic!("Expected FleetError::DriverNotRegistered, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_registered_driver_accepts_with_identity_and_default_policy() {
+    let (env, client, admin) = setup_without_identity_policy();
+    let identity = setup_with_identity(&env, &client, &admin);
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+    let driver = Address::generate(&env);
+    identity.register_driver(&driver);
+
+    client.add_driver_to_fleet(&owner, &fleet_id, &driver, &no_co_signers(&env));
+    client.accept_fleet_invite(&fleet_id, &driver);
+
+    assert_eq!(
+        client.get_driver_fleet_status(&fleet_id, &driver),
+        Some(DriverFleetStatus::Active)
+    );
+}
+
+#[test]
+fn test_set_identity_optional_requires_admin() {
+    let (env, client, _admin) = setup_without_identity_policy();
+    let result = client.try_set_identity_optional(&Address::generate(&env), &true);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::Unauthorized.into()),
+        other => panic!("Expected TrustchainError::Unauthorized, got {:?}", other),
+    }
+    assert!(!client.get_identity_optional());
 }

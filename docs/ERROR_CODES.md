@@ -33,6 +33,8 @@ define no local error enum and raise only the shared `TrustchainError` below.
 | 11 | `ProtocolPaused` | Protocol is paused and fund movements are halted. |
 | 12 | `LimitExceeded` | Requested operation would exceed a fixed capacity/growth limit (e.g. `dispute_resolution_contract::add_evidence_hash` once the calling party has already submitted its per-party maximum of 20 evidence hashes for that dispute — the cap is enforced per submitting party, so at most `3 × 20` hashes accumulate across the three delivery parties). |
 | 13 | `TimelockNotElapsed` | A requested timelocked operation was attempted before its delay elapsed. |
+| 14 | `NoPendingContractChange` | A peer-contract `confirm_*` call was made with no proposal pending. |
+| 15 | `ContractChangeTimelockNotElapsed` | A peer-contract change was confirmed before its three-day review period elapsed. |
 
 Note: codes `7` and `10` are intentionally unused gaps left by prior variant removals —
 they are not reserved for anything and should not be inferred to mean "no error."
@@ -62,6 +64,9 @@ Shared failures such as `InvalidState`, `DeliveryNotFound`, `InsufficientFunds`,
 | 4 | `InvalidDriver` | Driver address matches the delivery's sender or recipient. |
 | 5 | `InvalidParties` | Sender and recipient are the same address. |
 | 6 | `EscrowNotLocked` | The escrow is absent or not locked when funded escrow is required. |
+| 7 | `InvalidIndexKind` | `get_deliveries_page` was called with an unknown index kind. |
+| 8 | `EscrowPartyMismatch` | `confirm_delivery` found the escrow bound to a different driver, sender, or recipient than the delivery. |
+| 9 | `IdentityNotConfigured` | `assign_driver` ran with no identity contract configured and no-identity mode not enabled (or `require_kyc` set). |
 
 Shared failures such as `InvalidState`, `Unauthorized`, `DeliveryNotFound`, and
 `NotInitialized` use `TrustchainError`.
@@ -80,6 +85,10 @@ Shared failures such as `InvalidState`, `Unauthorized`, `DeliveryNotFound`, and
 | 12 | `InternalStorageError` | Roster compaction read a storage slot that should have existed but was absent. |
 | 13 | `DriverNotRegistered` | `accept_fleet_invite` was called by an address with no `DriverProfile` in the configured identity/reputation contract (Issue #451). |
 | 14 | `RosterFull` | The fleet already holds `MAX_ROSTER_SIZE` active drivers. |
+| 15 | `NoPendingContractChange` | `confirm_identity_contract` / `confirm_escrow_contract` called with no proposal pending. |
+| 16 | `ContractChangeTimelockNotElapsed` | A peer-contract change was confirmed before its review period elapsed. |
+| 17 | `NoPendingOwnerReassignment` | `accept_fleet_owner_reassignment` called with no reassignment pending. |
+| 18 | `IdentityNotConfigured` | `add_driver_to_fleet` / `accept_fleet_invite` ran with no identity contract configured and no-identity mode not enabled. |
 
 Shared failures such as `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, and
 `TimelockNotElapsed` use `TrustchainError`.

@@ -227,7 +227,7 @@ impl IdentityReputationContract {
             ttl::LEDGER_TTL_EXTEND_TO,
         );
         env.events().publish(
-            (soroban_sdk::Symbol::new(&env, "delivery_contract_change_proposed"),),
+            (soroban_sdk::Symbol::new(&env, "delivery_contract_proposed"),),
             (admin, delivery_contract, activates_at),
         );
     }
@@ -303,6 +303,14 @@ impl IdentityReputationContract {
         env.storage().persistent().get(&key).unwrap_or(false)
     }
 
+    /// Read-only existence check for a driver profile.
+    ///
+    /// Like `get_driver_profile`, this deliberately does **not** extend the
+    /// profile's TTL (Issue #392). An *archived* profile is not a missing
+    /// one: Soroban keeps archived persistent entries and restores them when
+    /// a transaction's footprint includes them, so a simulated call reports
+    /// that a restore is required rather than returning `false`. See
+    /// `extend_driver_profile_ttl` for the recovery path.
     pub fn has_driver_profile(env: Env, driver: Address) -> bool {
         let key = DataKey::DriverProfile(driver);
         env.storage()
@@ -320,11 +328,21 @@ impl IdentityReputationContract {
     /// no-op — while removing the `AlreadyInitialized` panic that forced
     /// cross-contract callers (e.g. `fleet_management_contract::register_fleet`)
     /// to defend with their own `has_driver_profile` pre-checks.
+    ///
+    /// Archival recovery: when a returning driver calls this after a long
+    /// absence, their (restored) profile is returned with its history intact
+    /// and its TTL is extended, so the profile cannot silently lapse into
+    /// archival again right after the driver comes back.
     #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
     pub fn register_driver(env: Env, driver: Address) -> DriverProfile {
         driver.require_auth();
         let key = DataKey::DriverProfile(driver.clone());
         if let Some(existing) = env.storage().persistent().get::<_, DriverProfile>(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                ttl::LEDGER_TTL_THRESHOLD,
+                ttl::LEDGER_TTL_EXTEND_TO,
+            );
             return existing;
         }
 
@@ -399,6 +417,36 @@ impl IdentityReputationContract {
     pub fn has_user_profile(env: Env, user: Address) -> bool {
         let key = DataKey::UserProfile(user);
         env.storage().persistent().has(&key)
+    }
+
+    /// Extend the TTL of an existing driver profile so it is not archived.
+    ///
+    /// Read paths (`get_driver_profile`, `has_driver_profile`,
+    /// `is_driver_suspended`) never extend TTL (Issue #392), so a driver who
+    /// is registered but inactive for longer than `LEDGER_TTL_EXTEND_TO`
+    /// ledgers would otherwise have their profile archived. This entry point
+    /// is permissionless — anyone may pay to keep a profile live (a keeper,
+    /// a fleet operator, or the driver) — and it never changes the profile's
+    /// contents, so it grants no capability beyond paying rent.
+    ///
+    /// If the profile is already archived, the submitting transaction must
+    /// include it in its footprint, which restores it (simulation adds the
+    /// restore automatically on protocol 23+). Returns the profile.
+    ///
+    /// Panics with `ProviderNotFound` when no profile was ever registered.
+    pub fn extend_driver_profile_ttl(env: Env, driver: Address) -> DriverProfile {
+        let key = DataKey::DriverProfile(driver);
+        let profile: DriverProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::ProviderNotFound));
+        env.storage().persistent().extend_ttl(
+            &key,
+            ttl::LEDGER_TTL_THRESHOLD,
+            ttl::LEDGER_TTL_EXTEND_TO,
+        );
+        profile
     }
 
     pub fn get_driver_profile(env: Env, driver: Address) -> DriverProfile {

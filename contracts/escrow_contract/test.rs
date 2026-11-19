@@ -4206,6 +4206,8 @@ fn test_delivery_cancellation_still_refunds_sender_after_fix() {
 
     escrow_client.init(&admin, &token, &0);
     delivery_client.init(&admin, &escrow_contract_id);
+    // No identity contract here: opt into no-identity mode explicitly.
+    delivery_client.set_identity_optional(&admin, &true);
     mint(&env, &token, &sender, 800);
 
     let metadata = shared_types::DeliveryMetadata {
@@ -5020,7 +5022,7 @@ fn test_clear_fleet_management_contract_emits_audit_event() {
 
     let (topics, data) = last_event(&env);
     let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(topic, Symbol::new(&env, "fleet_management_contract_cleared"));
+    assert_eq!(topic, Symbol::new(&env, "fleet_contract_cleared"));
     assert_eq!(
         data,
         (admin, env.ledger().timestamp()).into_val(&env)

@@ -66,15 +66,26 @@ fn require_escrow_not_paused(env: &Env) {
 /// complete a delivery (the reputation cross-contract call panics), the fleet
 /// owner would have to pay gas to evict it later.
 ///
-/// The check is skipped when no identity contract is configured, preserving
-/// the pre-#451 behaviour for standalone deployments that do not run the
-/// identity/reputation contract at all.
+/// When no identity contract is configured (including while a proposed one
+/// is still inside its timelock), the check fails closed with
+/// `FleetError::IdentityNotConfigured` unless the admin has deliberately
+/// enabled no-identity mode via `set_identity_optional`. Standalone
+/// deployments that do not run the identity/reputation contract must opt in
+/// explicitly rather than silently admitting unregistered drivers.
 fn require_registered_driver(env: &Env, driver: &Address) {
     let Some(identity_addr) = env
         .storage()
         .instance()
         .get::<DataKey, Address>(&DataKey::IdentityContract)
     else {
+        let identity_optional: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::IdentityOptional)
+            .unwrap_or(false);
+        if !identity_optional {
+            panic_with_error!(env, FleetError::IdentityNotConfigured);
+        }
         return;
     };
     let has_profile: bool = env.invoke_contract(
@@ -156,6 +167,10 @@ pub enum FleetError {
     NoPendingContractChange = 15,
     ContractChangeTimelockNotElapsed = 16,
     NoPendingOwnerReassignment = 17,
+    /// A driver-registration check ran with no identity contract configured
+    /// and the deployment has not opted into no-identity mode via
+    /// `set_identity_optional`.
+    IdentityNotConfigured = 18,
 }
 
 #[contracttype]
@@ -219,6 +234,9 @@ pub enum DataKey {
     PendingIdentityContract,
     /// Instance key — pending escrow contract address awaiting confirmation.
     PendingEscrowContract,
+    /// Instance key — `true` when the deployment has deliberately opted out
+    /// of identity integration (no-identity mode). Defaults to `false`.
+    IdentityOptional,
 }
 
 #[contracttype]
@@ -281,7 +299,7 @@ impl FleetManagementContract {
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
         env.events().publish(
-            (Symbol::new(&env, "identity_contract_change_proposed"),),
+            (Symbol::new(&env, "identity_contract_proposed"),),
             (admin, identity_contract, activates_at),
         );
     }
@@ -321,6 +339,45 @@ impl FleetManagementContract {
         env.storage()
             .instance()
             .get(&DataKey::IdentityContract)
+    }
+
+    /// Explicitly enable or disable no-identity mode.
+    ///
+    /// By default `add_driver_to_fleet` and `accept_fleet_invite` fail closed
+    /// with `FleetError::IdentityNotConfigured` while no identity contract is
+    /// configured, so a missing peer cannot admit unregistered drivers to an
+    /// active fleet. Standalone deployments that do not run the identity
+    /// contract must set `optional = true` deliberately. The flag only
+    /// matters while no identity contract is configured; once one is
+    /// confirmed, registration is always required.
+    ///
+    /// **Authorization:** Admin only.
+    #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
+    pub fn set_identity_optional(env: Env, admin: Address, optional: bool) {
+        admin.require_auth();
+        if !is_admin(&env, &admin) {
+            panic_with_error!(&env, TrustchainError::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::IdentityOptional, &optional);
+        env.storage()
+            .instance()
+            .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+        env.events().publish(
+            (Symbol::new(&env, "identity_optional_updated"),),
+            (admin, optional),
+        );
+    }
+
+    /// `true` when no-identity mode is enabled; `false` (default) means
+    /// driver invitations and acceptances require a configured identity
+    /// contract.
+    pub fn get_identity_optional(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::IdentityOptional)
+            .unwrap_or(false)
     }
 
     /// Propose an escrow contract address. The address takes effect only
@@ -608,10 +665,33 @@ impl FleetManagementContract {
             ttl::LEDGER_TTL_EXTEND_TO,
         );
         env.events().publish(
-            (Symbol::new(&env, "fleet_owner_reassignment_proposed"),),
+            (Symbol::new(&env, "fleet_owner_reassign_proposed"),),
             (fleet_id, admin, new_owner),
         );
     }
+
+    /// Accept an admin-proposed fleet owner reassignment. Only the exact
+    /// proposed address can accept, and the address must authorize this call.
+    #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
+    pub fn accept_fleet_owner_reassignment(env: Env, new_owner: Address, fleet_id: u64) {
+        env.storage().instance().extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+        new_owner.require_auth();
+        let pending_key = DataKey::PendingFleetOwnerReassignment(fleet_id);
+        let pending: PendingFleetOwnerReassignment = env
+            .storage()
+            .persistent()
+            .get(&pending_key)
+            .unwrap_or_else(|| panic_with_error!(&env, FleetError::NoPendingOwnerReassignment));
+        if pending.new_owner != new_owner {
+            panic_with_error!(&env, TrustchainError::Unauthorized);
+        }
+
+        let fleet_key = DataKey::Fleet(fleet_id);
+        let mut profile: FleetProfile = env
+            .storage()
+            .persistent()
+            .get(&fleet_key)
+            .unwrap_or_else(|| panic_with_error!(&env, FleetError::FleetNotFound));
 
         if new_owner == profile.treasury {
             panic_with_error!(&env, FleetError::InvalidConfiguration);
@@ -651,7 +731,7 @@ impl FleetManagementContract {
         );
     }
 
-    pub fn get_pending_fleet_owner_reassignment(
+    pub fn get_pending_owner_reassignment(
         env: Env,
         fleet_id: u64,
     ) -> Option<PendingFleetOwnerReassignment> {
@@ -872,8 +952,10 @@ impl FleetManagementContract {
     ///
     /// `caller` must be an authorized signer and must sign the transaction.
     /// Stores a `Pending` invite for `driver` under this fleet.
-    /// If an identity contract is configured, the driver must already be
-    /// registered there before an invitation can be issued.
+    /// The driver must already be registered in the configured identity
+    /// contract before an invitation can be issued. With none configured this
+    /// fails with `FleetError::IdentityNotConfigured` unless no-identity mode
+    /// is enabled via `set_identity_optional`.
     /// The driver must later call `accept_fleet_invite` to become active.
     /// `co_signers` supplies any additional signer authorizations needed to
     /// satisfy the fleet's `signature_threshold` beyond `caller` alone — pass
@@ -1012,8 +1094,9 @@ impl FleetManagementContract {
     /// rejected with `FleetError::DriverNotRegistered` (Issue #451). Only
     /// registered drivers can legally complete deliveries, so letting an
     /// unregistered address into the roster would permanently waste one of
-    /// the `MAX_ROSTER_SIZE`-bounded roster slots. The check is skipped when
-    /// no identity contract is configured.
+    /// the `MAX_ROSTER_SIZE`-bounded roster slots. With no identity contract
+    /// configured this fails with `FleetError::IdentityNotConfigured` unless
+    /// no-identity mode is enabled via `set_identity_optional`.
     #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
     pub fn accept_fleet_invite(env: Env, fleet_id: u64, driver: Address) {
         env.storage().instance().extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);

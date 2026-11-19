@@ -47,3 +47,16 @@ describe('IdentityReputationClient moderation bindings', () => {
     );
   });
 });
+
+describe('IdentityReputationClient archival recovery binding', () => {
+  const contract = fs.readFileSync(CONTRACT_PATH, 'utf8');
+  const client = fs.readFileSync(CLIENT_PATH, 'utf8');
+
+  test('extendDriverProfileTtl invokes extend_driver_profile_ttl with only the driver', () => {
+    expect(contract).toContain('pub fn extend_driver_profile_ttl(env: Env, driver: Address) -> DriverProfile');
+    expect(client).toContain('async extendDriverProfileTtl(');
+    expect(client).toContain(
+      "return decodeDriverProfile(await this.invoker.call('extend_driver_profile_ttl', [address(driver)], options));",
+    );
+  });
+});

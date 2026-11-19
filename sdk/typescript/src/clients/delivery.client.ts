@@ -201,6 +201,31 @@ export class DeliveryClient {
   }
 
   /**
+   * Explicitly enable or disable no-identity mode (admin only).
+   *
+   * By default `assign_driver` fails closed with `IdentityNotConfigured` when
+   * no identity contract is configured. Standalone deployments that do not
+   * run the identity contract must opt in with `optional = true`. Once an
+   * identity contract is configured its checks always apply, and
+   * `require_kyc` still fails closed without one.
+   */
+  async setIdentityOptional(optional: boolean, options?: ContractInvokeOptions): Promise<void> {
+    const admin = options?.sourceAccount;
+    if (!admin) {
+      throw new Error('setIdentityOptional requires options.sourceAccount as admin');
+    }
+    await this.invoker.call('set_identity_optional', [address(admin), bool(optional)], options);
+  }
+
+  /**
+   * `true` when no-identity mode is enabled; `false` (default) means
+   * `assign_driver` requires a configured identity contract.
+   */
+  async getIdentityOptional(options?: ContractInvokeOptions): Promise<boolean> {
+    return Boolean(await this.invoker.call('get_identity_optional', [], options));
+  }
+
+  /**
    * Get the dispute resolution contract address
    */
   async getDisputeResolutionContract(options?: ContractInvokeOptions): Promise<string | null> {

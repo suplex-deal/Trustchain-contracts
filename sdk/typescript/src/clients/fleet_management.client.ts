@@ -4,7 +4,7 @@
 
 import { ContractInvokeOptions, DriverFleetStatus, FleetProfile, PendingTreasuryChange } from '../types/common.types';
 import * as FleetManagementTypes from '../types/fleet_management.types';
-import { ContractInvoker, address, u32, u64, vec } from './invoker';
+import { ContractInvoker, address, bool, u32, u64, vec } from './invoker';
 
 /**
  * Maximum roster entries the contract returns for a single `get_fleet_roster`
@@ -41,6 +41,26 @@ export class FleetManagementClient {
   async getIdentityContract(options?: ContractInvokeOptions): Promise<string | null> {
     const result = await this.invoker.call('get_identity_contract', [], options);
     return result == null ? null : String(result);
+  }
+
+  /**
+   * Explicitly enable or disable no-identity mode (admin only).
+   *
+   * By default `add_driver_to_fleet` and `accept_fleet_invite` fail closed
+   * with `IdentityNotConfigured` while no identity contract is configured.
+   * Standalone deployments must opt in with `optional = true`; once an
+   * identity contract is confirmed, registration is always required.
+   */
+  async setIdentityOptional(
+    params: FleetManagementTypes.SetIdentityOptionalParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    await this.invoker.call('set_identity_optional', [address(params.admin), bool(params.optional)], options);
+  }
+
+  /** `true` when no-identity mode is enabled; `false` by default. */
+  async getIdentityOptional(options?: ContractInvokeOptions): Promise<boolean> {
+    return Boolean(await this.invoker.call('get_identity_optional', [], options));
   }
 
   async setEscrowContract(params: FleetManagementTypes.SetEscrowContractParams, options?: ContractInvokeOptions): Promise<void> {

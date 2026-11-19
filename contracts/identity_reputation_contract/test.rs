@@ -2,7 +2,7 @@ use super::*;
 use proptest::prelude::*;
 use shared_types::TrustchainError;
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger as _},
+    testutils::{storage::Persistent as _, Address as _, Events, Ledger as _},
     xdr, Address, Env, Symbol, TryFromVal, Val,
 };
 
@@ -1429,4 +1429,93 @@ fn test_register_driver_emits_event_with_kyc_and_score() {
     let profile = client.get_driver_profile(&driver);
     assert!(!profile.kyc_verified);
     assert_eq!(profile.reputation_score, INITIAL_REPUTATION_SCORE);
+}
+
+// ── Driver profile archival recovery ─────────────────────────────────────────
+
+fn driver_profile_ttl(env: &Env, client: &IdentityReputationContractClient, driver: &Address) -> u32 {
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::DriverProfile(driver.clone()))
+    })
+}
+
+/// Advance far enough that the remaining TTL drops below the extension
+/// threshold, so any `extend_ttl` call is observable.
+fn age_past_ttl_threshold(env: &Env) {
+    env.ledger().with_mut(|l| {
+        l.sequence_number += ttl::LEDGER_TTL_EXTEND_TO - ttl::LEDGER_TTL_THRESHOLD + 1;
+    });
+}
+
+#[test]
+fn test_driver_profile_reads_do_not_extend_ttl() {
+    let (env, _admin, client, _, _) = setup();
+    let driver = Address::generate(&env);
+    client.register_driver(&driver);
+    age_past_ttl_threshold(&env);
+    let before = driver_profile_ttl(&env, &client, &driver);
+
+    assert!(client.has_driver_profile(&driver));
+    client.get_driver_profile(&driver);
+    assert!(!client.is_driver_suspended(&driver));
+
+    assert_eq!(driver_profile_ttl(&env, &client, &driver), before);
+}
+
+#[test]
+fn test_register_driver_for_returning_driver_extends_ttl_and_keeps_history() {
+    let (env, admin, client, _, _) = setup();
+    let driver = Address::generate(&env);
+    client.register_driver(&driver);
+    client.update_driver_kyc_status(&admin, &driver, &true);
+    client.suspend_driver(&admin, &driver);
+    age_past_ttl_threshold(&env);
+    assert!(driver_profile_ttl(&env, &client, &driver) < ttl::LEDGER_TTL_THRESHOLD);
+
+    let profile = client.register_driver(&driver);
+
+    assert_eq!(driver_profile_ttl(&env, &client, &driver), ttl::LEDGER_TTL_EXTEND_TO);
+    // Re-registration must still not reset history or lift the suspension.
+    assert!(profile.kyc_verified);
+    assert_eq!(profile.status, DriverStatus::Suspended);
+    assert_eq!(client.get_driver_profile(&driver), profile);
+}
+
+#[test]
+fn test_extend_driver_profile_ttl_refreshes_existing_profile() {
+    let (env, _admin, client, _, _) = setup();
+    let driver = Address::generate(&env);
+    let registered = client.register_driver(&driver);
+    age_past_ttl_threshold(&env);
+
+    let profile = client.extend_driver_profile_ttl(&driver);
+
+    assert_eq!(profile, registered);
+    assert_eq!(driver_profile_ttl(&env, &client, &driver), ttl::LEDGER_TTL_EXTEND_TO);
+}
+
+#[test]
+fn test_extend_driver_profile_ttl_needs_no_authorization() {
+    let env = Env::default();
+    let contract_id = env.register(IdentityReputationContract, ());
+    let client = IdentityReputationContractClient::new(&env, &contract_id);
+    let driver = Address::generate(&env);
+    env.mock_all_auths();
+    client.register_driver(&driver);
+    env.set_auths(&[]);
+
+    client.extend_driver_profile_ttl(&driver);
+    assert!(env.auths().is_empty());
+}
+
+#[test]
+fn test_extend_driver_profile_ttl_rejects_unregistered_driver() {
+    let (env, _admin, client, _, _) = setup();
+    let result = client.try_extend_driver_profile_ttl(&Address::generate(&env));
+    match result {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::ProviderNotFound.into()),
+        _ => panic!("Expected TrustchainError::ProviderNotFound"),
+    }
 }

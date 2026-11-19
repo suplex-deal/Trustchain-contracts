@@ -1,7 +1,7 @@
 #![no_std]
 
 use shared_types::{
-    escrow_key, events, is_admin, ttl, DeliveryRecord, DeliveryStatus, EscrowRecord, EscrowStatus,
+    escrow_key, events, is_admin, HIGH_VALUE_DISPUTE_THRESHOLD, ttl, DeliveryRecord, DeliveryStatus, EscrowRecord, EscrowStatus,
     TrustchainError, PendingPeerContractChange, ProtocolConfig, StorageKey,
 };
 use soroban_sdk::{
@@ -951,7 +951,7 @@ impl EscrowContract {
             .remove(&DataKey::FleetManagementContract);
         extend_instance_ttl(&env);
         env.events().publish(
-            (Symbol::new(&env, "fleet_management_contract_cleared"),),
+            (Symbol::new(&env, "fleet_contract_cleared"),),
             (admin, env.ledger().timestamp()),
         );
     }
@@ -1015,7 +1015,7 @@ impl EscrowContract {
         );
         extend_instance_ttl(&env);
         env.events().publish(
-            (Symbol::new(&env, "delivery_contract_change_proposed"),),
+            (Symbol::new(&env, "delivery_contract_proposed"),),
             (delivery_contract, activates_at),
         );
     }
@@ -1026,9 +1026,9 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::PendingDeliveryContract)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NoPendingContractChange));
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
         if env.ledger().timestamp() < pending.activates_at {
-            panic_with_error!(&env, EscrowError::ContractChangeTimelockNotElapsed);
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
         }
         env.storage()
             .instance()
@@ -2093,7 +2093,7 @@ impl EscrowContract {
         if new_window_seconds < constants::MIN_HOLDBACK_WINDOW_SECONDS
             || new_window_seconds > constants::MAX_HOLDBACK_WINDOW_SECONDS
         {
-            panic_with_error!(&env, EscrowError::InvalidState);
+            panic_with_error!(&env, TrustchainError::InvalidState);
         }
         env.storage()
             .instance()
