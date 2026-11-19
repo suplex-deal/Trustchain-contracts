@@ -60,6 +60,15 @@ non-paginated sender/recipient/driver getters are convenient for small indexes
 but return at most the first 100 records; use the page methods to enumerate
 larger indexes.
 
+**Index storage lifetime.** Each index is stored as 64-ID pages
+(`EscrowIndex` / `DeliveryIndex`) plus a length counter (`EscrowIndexLen` /
+`DeliveryIndexLen`), all persistent. Appending an ID extends the page it
+writes and the length together to `LEDGER_TTL_EXTEND_TO`, and every read
+extends the length and each page it returns IDs from. A full page is never
+written again, so long-idle history is kept alive by reading it (e.g. a
+periodic keeper walking `get_escrows_page` / `get_deliveries_page`); the
+length and the pages in use never expire apart.
+
 ### Interim: Event-Replay Indexing
 
 For off-chain applications requiring advanced queries (e.g., deliveries in a specific date range, by cargo category, or paginated results), the recommended interim approach is **event-replay indexing**:
@@ -340,7 +349,7 @@ leave the delivery contract unconfigured.
 - `Unauthorized` - Caller is not the configured admin
 - `NotInitialized` - Contract has not been initialised
 
-**Events:** `delivery_contract_change_proposed`; confirmation emits
+**Events:** `delivery_contract_proposed`; confirmation emits
 `delivery_contract_updated`.
 
 #### `confirm_delivery_contract`
@@ -934,6 +943,13 @@ when settlement swaps are executed.
 Returns the total amount of `token` currently locked across all escrows. This
 is the key metric referenced by `docs/MONITORING.md` and the basis for
 `get_untracked_balance` / `sweep_untracked_balance`.
+
+The underlying `TotalLocked` persistent entry has its TTL extended to
+`LEDGER_TTL_EXTEND_TO` on every escrow creation (single and batch), every
+settlement (release, refund, dispute resolution, reclaim) and every read
+through this getter, so the liability counter cannot expire while the escrows
+it tracks are still live. Returns `0` only for a token that has never been
+locked.
 
 **Parameters:**
 - `token: Address` - The token to query
@@ -1742,6 +1758,39 @@ Configure the identity/reputation contract address used for reputation penalties
 
 **Errors:**
 - `Unauthorized` - Caller is not an admin
+
+#### `set_delivery_contract` / `set_escrow_contract` (dispute resolution)
+Propose a new delivery or escrow peer address for the dispute contract. The
+setter only records a `PendingPeerContractChange` with
+`activates_at = now + PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS` (three days); the
+active `DeliveryContract` / `EscrowContract` pointer is **not** modified, so
+cross-contract calls keep targeting the current peer during the review window.
+A new proposal replaces any earlier pending one.
+
+**Parameters:**
+- `caller: Address` - Dispute admin
+- `delivery_contract` / `escrow_contract: Address` - Proposed peer address
+
+**Authorization:** Dispute admin only
+
+**Events:** `delivery_contract_proposed` / `escrow_contract_change_proposed`
+with `(caller, address, activates_at)`
+
+**Errors:**
+- `Unauthorized` - Caller is not a dispute admin
+
+#### `confirm_delivery_contract` / `confirm_escrow_contract` (dispute resolution)
+Permissionless. Switches the active pointer to the pending address once
+`activates_at` has been reached and clears the proposal, so a proposal is
+applied exactly once. Query pending state with `get_pending_delivery_contract`
+/ `get_pending_escrow_contract`.
+
+**Events:** `delivery_contract_set` / `escrow_contract_set` with
+`(proposed_by, address)`
+
+**Errors:**
+- `NoPendingContractChange` - No proposal is pending (including a second confirm)
+- `ContractChangeTimelockNotElapsed` - Called before `activates_at`
 
 #### `set_escrow_contract`
 Repoint the escrow contract this delivery contract cross-calls for every
@@ -2648,7 +2697,7 @@ active address changes only after three days and a separate
 **Errors:**
 - `Unauthorized` - Caller is not the stored admin
 
-**Events:** `delivery_contract_change_proposed`; confirmation emits
+**Events:** `delivery_contract_proposed`; confirmation emits
 `delivery_contract_updated` - `(admin, delivery_contract)`
 
 #### `confirm_delivery_contract`

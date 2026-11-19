@@ -1528,10 +1528,8 @@ fn test_clear_settlement_contract_emits_audit_event() {
     let (topics, data) = last_event(&env);
     let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
     assert_eq!(topic, Symbol::new(&env, "settlement_contract_cleared"));
-    assert_eq!(
-        data,
-        (admin, env.ledger().timestamp()).into_val(&env)
-    );
+    let payload = <(Address, u64)>::try_from_val(&env, &data).unwrap();
+    assert_eq!(payload, (admin, env.ledger().timestamp()));
 }
 
 #[test]
@@ -5021,10 +5019,8 @@ fn test_clear_fleet_management_contract_emits_audit_event() {
     let (topics, data) = last_event(&env);
     let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
     assert_eq!(topic, Symbol::new(&env, "fleet_management_contract_cleared"));
-    assert_eq!(
-        data,
-        (admin, env.ledger().timestamp()).into_val(&env)
-    );
+    let payload = <(Address, u64)>::try_from_val(&env, &data).unwrap();
+    assert_eq!(payload, (admin, env.ledger().timestamp()));
 }
 
 #[test]
@@ -5345,8 +5341,8 @@ fn test_escrow_released_event_shape_matches_across_emitters() {
         &None,
     );
     client_b.set_delivery_contract(&admin_b, &delivery_contract_b);
-    env.ledger().set_timestamp(
-        env.ledger().timestamp() + shared_types::PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS,
+    env_b.ledger().set_timestamp(
+        env_b.ledger().timestamp() + shared_types::PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS,
     );
     client_b.confirm_delivery_contract();
     client_b.mark_holdback_escrow(&delivery_contract_b, &801u64);
@@ -6653,7 +6649,7 @@ fn test_set_holdback_window_rejects_above_maximum() {
         &(constants::MAX_HOLDBACK_WINDOW_SECONDS + 1),
     );
     match result {
-        Err(Ok(err)) => assert_eq!(err, EscrowError::InvalidState.into()),
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::InvalidState.into()),
         _ => panic!("Expected EscrowError::InvalidState for an above-maximum window"),
     }
 
@@ -7392,4 +7388,280 @@ fn test_admin_freeze_funds_is_idempotent() {
     client.admin_freeze_funds(&admin, &10405u64);
 
     assert_eq!(client.get_escrow(&10405u64).status, EscrowStatus::Paused);
+}
+
+// ── TotalLocked TTL: the liability counter must outlive idle periods ─────────
+//
+// `sweep_untracked_balance` treats `balance - TotalLocked` as sweepable. If the
+// counter's persistent entry were allowed to lapse, live escrow funds would
+// look untracked. Every read and write of `TotalLocked` therefore extends its
+// TTL to `LEDGER_TTL_EXTEND_TO`, the same horizon as the escrow records.
+
+fn total_locked_ttl(env: &Env, contract_id: &Address, token: &Address) -> u32 {
+    let key = DataKey::TotalLocked(token.clone());
+    env.as_contract(contract_id, || env.storage().persistent().get_ttl(&key))
+}
+
+#[test]
+fn test_total_locked_ttl_extended_on_create_escrow() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&admin, &token, &0);
+    mint(&env, &token, &sender, 1000);
+
+    client.create_escrow(
+        &sender, &Address::generate(&env), &Address::generate(&env), &12001u64, &token, &1000, &None,
+    );
+
+    let ttl = total_locked_ttl(&env, &contract_id, &token);
+    assert_eq!(ttl, ttl::LEDGER_TTL_EXTEND_TO);
+    assert!(ttl > default_persistent_ttl(&env, &contract_id));
+}
+
+#[test]
+fn test_total_locked_ttl_extended_on_batch_create() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&admin, &token, &0);
+    mint(&env, &token, &sender, 1000);
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back((12002u64, Address::generate(&env), 1000i128, None::<u64>));
+    client.create_escrows_batch(&sender, &Address::generate(&env), &token, &batch);
+
+    assert_eq!(client.get_total_locked(&token), 1000);
+    assert_eq!(total_locked_ttl(&env, &contract_id, &token), ttl::LEDGER_TTL_EXTEND_TO);
+}
+
+#[test]
+fn test_total_locked_ttl_renewed_on_settlement_after_idle() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&admin, &token, &0);
+    mint(&env, &token, &sender, 2000);
+    client.create_escrow(&sender, &recipient, &Address::generate(&env), &12003u64, &token, &1000, &None);
+    client.create_escrow(&sender, &recipient, &Address::generate(&env), &12004u64, &token, &1000, &None);
+
+    // Let the counter drift below the renewal threshold, then settle.
+    env.ledger().with_mut(|l| l.sequence_number += ttl::LEDGER_TTL_EXTEND_TO - ttl::LEDGER_TTL_THRESHOLD + 1);
+    assert!(total_locked_ttl(&env, &contract_id, &token) < ttl::LEDGER_TTL_THRESHOLD);
+    client.release_escrow(&recipient, &12003u64);
+    assert_eq!(total_locked_ttl(&env, &contract_id, &token), ttl::LEDGER_TTL_EXTEND_TO);
+    assert_eq!(client.get_total_locked(&token), 1000);
+
+    env.ledger().with_mut(|l| l.sequence_number += ttl::LEDGER_TTL_EXTEND_TO - ttl::LEDGER_TTL_THRESHOLD + 1);
+    client.refund_escrow(&sender, &12004u64);
+    assert_eq!(total_locked_ttl(&env, &contract_id, &token), ttl::LEDGER_TTL_EXTEND_TO);
+    assert_eq!(client.get_total_locked(&token), 0);
+}
+
+#[test]
+fn test_get_total_locked_renews_ttl() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&admin, &token, &0);
+    mint(&env, &token, &sender, 1000);
+    client.create_escrow(
+        &sender, &Address::generate(&env), &Address::generate(&env), &12005u64, &token, &1000, &None,
+    );
+
+    env.ledger().with_mut(|l| l.sequence_number += ttl::LEDGER_TTL_EXTEND_TO - ttl::LEDGER_TTL_THRESHOLD + 1);
+    assert_eq!(client.get_total_locked(&token), 1000);
+    assert_eq!(total_locked_ttl(&env, &contract_id, &token), ttl::LEDGER_TTL_EXTEND_TO);
+}
+
+#[test]
+fn test_get_total_locked_absent_token_is_zero() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&Address::generate(&env), &token, &0);
+    // Never-locked token: zero, and no entry is created by the read.
+    assert_eq!(client.get_total_locked(&token), 0);
+    let key = DataKey::TotalLocked(token.clone());
+    assert!(!env.as_contract(&contract_id, || env.storage().persistent().has(&key)));
+}
+
+/// Sweep must never take live liabilities, even after the protocol has sat
+/// idle for longer than a default persistent-entry lifetime.
+#[test]
+fn test_sweep_after_idle_never_includes_live_escrow() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let recovery = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&admin, &token, &0);
+    mint(&env, &token, &sender, 1000);
+    let driver = Address::generate(&env);
+    client.create_escrow(&sender, &recipient, &driver, &12006u64, &token, &1000, &None);
+    mint(&env, &token, &contract_id, 250); // stray transfer
+
+    let idle = default_persistent_ttl(&env, &contract_id) + 1;
+    env.ledger().with_mut(|l| l.sequence_number += idle);
+
+    assert_eq!(client.get_untracked_balance(&token), 250);
+    assert_eq!(client.sweep_untracked_balance(&admin, &token, &recovery), 250);
+    assert_eq!(balance(&env, &token, &recovery), 250);
+    assert_eq!(balance(&env, &token, &contract_id), 1000);
+    assert_eq!(client.get_total_locked(&token), 1000);
+
+    // A second sweep finds nothing, and the live escrow still settles in full.
+    assert_eq!(client.sweep_untracked_balance(&admin, &token, &recovery), 0);
+    client.release_escrow(&recipient, &12006u64);
+    assert_eq!(balance(&env, &token, &driver), 1000);
+    assert_eq!(client.get_total_locked(&token), 0);
+}
+
+// ── Owner index TTL: pages and lengths expire together, never apart ──────────
+//
+// `EscrowIndex` pages and `EscrowIndexLen` are persistent entries. If either
+// lapsed while the other survived, historical escrows would vanish from
+// enumeration (or the next push would overwrite page 0). Every push extends
+// the page it writes and the length together; every read renews the length
+// and the pages it touches.
+
+fn index_ttls(env: &Env, contract_id: &Address, owner: &Address, kind: u32, page: u32) -> (u32, u32) {
+    let page_key = DataKey::EscrowIndex(owner.clone(), kind, page);
+    let len_key = DataKey::EscrowIndexLen(owner.clone(), kind);
+    env.as_contract(contract_id, || {
+        (
+            env.storage().persistent().get_ttl(&page_key),
+            env.storage().persistent().get_ttl(&len_key),
+        )
+    })
+}
+
+const INDEX_DRIFT: u32 = ttl::LEDGER_TTL_EXTEND_TO - ttl::LEDGER_TTL_THRESHOLD + 1;
+
+#[test]
+fn test_escrow_index_push_extends_page_and_len_together() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let driver = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&Address::generate(&env), &token, &0);
+    mint(&env, &token, &sender, 100);
+
+    client.create_escrow(&sender, &recipient, &driver, &13001u64, &token, &100, &None);
+
+    for (owner, kind) in [(&sender, 0u32), (&recipient, 1), (&driver, 2)] {
+        let (page_ttl, len_ttl) = index_ttls(&env, &contract_id, owner, kind, 0);
+        assert_eq!(page_ttl, ttl::LEDGER_TTL_EXTEND_TO, "kind {kind} page");
+        assert_eq!(len_ttl, ttl::LEDGER_TTL_EXTEND_TO, "kind {kind} len");
+        assert!(page_ttl > default_persistent_ttl(&env, &contract_id));
+    }
+}
+
+#[test]
+fn test_escrow_index_push_after_idle_realigns_page_and_len() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let sender = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&Address::generate(&env), &token, &0);
+    mint(&env, &token, &sender, 200);
+
+    client.create_escrow(&sender, &Address::generate(&env), &Address::generate(&env), &13002u64, &token, &100, &None);
+    env.ledger().with_mut(|l| l.sequence_number += INDEX_DRIFT);
+    let (page_ttl, len_ttl) = index_ttls(&env, &contract_id, &sender, 0, 0);
+    assert!(page_ttl < ttl::LEDGER_TTL_THRESHOLD && len_ttl < ttl::LEDGER_TTL_THRESHOLD);
+
+    client.create_escrow(&sender, &Address::generate(&env), &Address::generate(&env), &13003u64, &token, &100, &None);
+    assert_eq!(
+        index_ttls(&env, &contract_id, &sender, 0, 0),
+        (ttl::LEDGER_TTL_EXTEND_TO, ttl::LEDGER_TTL_EXTEND_TO)
+    );
+    let ids = client.get_escrows_by_sender(&sender);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.get(0), Some(13002));
+    assert_eq!(ids.get(1), Some(13003));
+}
+
+/// A full page is never written again, so reading it must keep it in step
+/// with the (still-growing) length — otherwise old IDs would drop out of the
+/// listing while their records survive.
+#[test]
+fn test_escrow_index_read_renews_full_page_with_len() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let sender = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&Address::generate(&env), &token, &0);
+    mint(&env, &token, &sender, 65);
+    // Filling a whole 64-ID page in one batch exceeds the default test budget.
+    env.cost_estimate().disable_resource_limits();
+    env.cost_estimate().budget().reset_unlimited();
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    for i in 0..64u64 {
+        batch.push_back((13100 + i, Address::generate(&env), 1i128, None::<u64>));
+    }
+    client.create_escrows_batch(&sender, &Address::generate(&env), &token, &batch);
+
+    // Page 0 is now full. Let it drift, then push onto page 1.
+    env.ledger().with_mut(|l| l.sequence_number += INDEX_DRIFT);
+    client.create_escrow(&sender, &Address::generate(&env), &Address::generate(&env), &13200u64, &token, &1, &None);
+    let (page0_ttl, len_ttl) = index_ttls(&env, &contract_id, &sender, 0, 0);
+    assert_eq!(len_ttl, ttl::LEDGER_TTL_EXTEND_TO);
+    assert!(page0_ttl < ttl::LEDGER_TTL_THRESHOLD);
+
+    // Reading across both pages renews page 0 back in line with the length.
+    let ids = client.get_escrows_page(&sender, &0, &0, &100);
+    assert_eq!(ids.len(), 65);
+    assert_eq!(ids.get(0), Some(13100));
+    assert_eq!(ids.get(64), Some(13200));
+    assert_eq!(
+        index_ttls(&env, &contract_id, &sender, 0, 0),
+        (ttl::LEDGER_TTL_EXTEND_TO, ttl::LEDGER_TTL_EXTEND_TO)
+    );
+    assert_eq!(index_ttls(&env, &contract_id, &sender, 0, 1).0, ttl::LEDGER_TTL_EXTEND_TO);
+}
+
+#[test]
+fn test_escrow_index_read_for_unknown_owner_is_empty_and_writes_nothing() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&Address::generate(&env), &token, &0);
+    let stranger = Address::generate(&env);
+
+    assert_eq!(client.get_escrows_page(&stranger, &0, &0, &10).len(), 0);
+    let len_key = DataKey::EscrowIndexLen(stranger.clone(), 0);
+    let page_key = DataKey::EscrowIndex(stranger.clone(), 0, 0);
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().persistent().has(&len_key));
+        assert!(!env.storage().persistent().has(&page_key));
+    });
+}
+
+#[test]
+fn test_escrow_index_offset_past_end_is_empty() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let sender = Address::generate(&env);
+    let token = setup_token(&env, &Address::generate(&env));
+    client.init(&Address::generate(&env), &token, &0);
+    mint(&env, &token, &sender, 100);
+    client.create_escrow(&sender, &Address::generate(&env), &Address::generate(&env), &13300u64, &token, &100, &None);
+
+    assert_eq!(client.get_escrows_page(&sender, &0, &1, &10).len(), 0);
+    assert_eq!(client.get_escrows_page(&sender, &0, &0, &0).len(), 0);
 }

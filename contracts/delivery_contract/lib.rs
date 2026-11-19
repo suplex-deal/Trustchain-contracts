@@ -81,6 +81,24 @@ pub enum DataKey {
 }
 
 const INDEX_PAGE: u32 = 64;
+
+/// Extend a persistent owner-index entry to the protocol-wide TTL horizon.
+fn extend_index_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+}
+
+/// Append `id` to `owner`'s index of the given `kind`.
+///
+/// Invariant: the page and the `DeliveryIndexLen` counter are written together
+/// and always extended together, to the same horizon as the delivery records
+/// they enumerate. A lapsed page under a live length would silently drop IDs
+/// from enumeration; a lapsed length over live pages would make the next push
+/// restart at page 0 and overwrite history. Older, already-full pages are
+/// renewed by `index_page` whenever they are read; renewal on push is kept to
+/// the two entries written so the footprint stays constant however long an
+/// owner's history grows.
 #[rustfmt::skip]
 fn index_push(env: &Env, owner: &Address, kind: u32, id: DeliveryId) {
     let len_key = DataKey::DeliveryIndexLen(owner.clone(), kind);
@@ -91,19 +109,36 @@ fn index_push(env: &Env, owner: &Address, kind: u32, id: DeliveryId) {
     page.push_back(id);
     env.storage().persistent().set(&key, &page);
     env.storage().persistent().set(&len_key, &(len + 1));
+    extend_index_ttl(env, &key);
+    extend_index_ttl(env, &len_key);
 }
 
+/// Read up to `limit` (capped at 100) IDs from `owner`'s index starting at
+/// `offset`. Reading renews the length and every page touched, so listings
+/// that are being consumed stay alive alongside the records they point to.
 #[rustfmt::skip]
 fn index_page(env: &Env, owner: Address, kind: u32, offset: u32, limit: u32) -> soroban_sdk::Vec<DeliveryId> {
-    let len: u32 = env.storage().persistent()
-        .get(&DataKey::DeliveryIndexLen(owner.clone(), kind)).unwrap_or(0);
+    let len_key = DataKey::DeliveryIndexLen(owner.clone(), kind);
+    let len: u32 = env.storage().persistent().get(&len_key).unwrap_or(0);
     let mut out = soroban_sdk::Vec::new(env);
+    if len == 0 {
+        return out;
+    }
+    extend_index_ttl(env, &len_key);
     let end = len.min(offset.saturating_add(limit.min(100)));
+    let mut loaded: Option<(u32, soroban_sdk::Vec<DeliveryId>)> = None;
     for i in offset.min(len)..end {
-        let page: soroban_sdk::Vec<DeliveryId> = env.storage().persistent()
-            .get(&DataKey::DeliveryIndex(owner.clone(), kind, i / INDEX_PAGE))
-            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
-        if let Some(id) = page.get(i % INDEX_PAGE) { out.push_back(id); }
+        let page_no = i / INDEX_PAGE;
+        if loaded.as_ref().map(|(n, _)| *n) != Some(page_no) {
+            let key = DataKey::DeliveryIndex(owner.clone(), kind, page_no);
+            let page: soroban_sdk::Vec<DeliveryId> = env.storage().persistent().get(&key)
+                .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+            if !page.is_empty() { extend_index_ttl(env, &key); }
+            loaded = Some((page_no, page));
+        }
+        if let Some((_, page)) = loaded.as_ref() {
+            if let Some(id) = page.get(i % INDEX_PAGE) { out.push_back(id); }
+        }
     }
     out
 }
@@ -325,9 +360,9 @@ impl DeliveryContract {
             .storage()
             .instance()
             .get(&DataKey::PendingEscrowContract)
-            .unwrap_or_else(|| panic_with_error!(&env, DeliveryError::NoPendingContractChange));
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
         if env.ledger().timestamp() < pending.activates_at {
-            panic_with_error!(&env, DeliveryError::ContractChangeTimelockNotElapsed);
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
         }
         env.storage()
             .instance()

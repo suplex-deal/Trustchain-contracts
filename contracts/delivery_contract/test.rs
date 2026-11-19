@@ -3,7 +3,7 @@ extern crate std;
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger as _},
+    testutils::{storage::Persistent as _, Address as _, Events, Ledger as _},
     xdr, Address, Env, IntoVal, String, Symbol, TryFromVal, Val,
 };
 
@@ -2428,7 +2428,7 @@ fn test_delivery_emits_typed_created_and_driver_assigned_events() {
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let created: DeliveryCreatedEvent =
         DeliveryCreatedEvent::try_from_val(&env, &data).expect("invalid delivery_created payload");
-    assert_eq!(created.delivery_id, delivery_id.into());
+    assert_eq!(created.delivery_id, u64::from(delivery_id));
     assert_eq!(created.sender, shipper);
 
     client.assign_driver(&shipper, &delivery_id, &driver);
@@ -2439,7 +2439,7 @@ fn test_delivery_emits_typed_created_and_driver_assigned_events() {
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let assigned: DriverAssignedEvent =
         DriverAssignedEvent::try_from_val(&env, &data).expect("invalid driver_assigned payload");
-    assert_eq!(assigned.delivery_id, delivery_id.into());
+    assert_eq!(assigned.delivery_id, u64::from(delivery_id));
     assert_eq!(assigned.driver, driver);
 }
 
@@ -2506,7 +2506,7 @@ fn test_set_identity_reputation_contract_emits_audit_event() {
     let events = env.events().all();
     let raw_event = events.events().last().expect("no event emitted");
     let xdr::ContractEventBody::V0(body) = raw_event.body.clone();
-    let topic = Symbol::try_from_val(&env, &body.topics.get(0).unwrap()).unwrap();
+    let topic = Symbol::try_from_val(&env, body.topics.get(0).unwrap()).unwrap();
     let data = Val::try_from_val(&env, &body.data).unwrap();
     let (event_admin, event_identity): (Address, Address) =
         <(Address, Address)>::try_from_val(&env, &data).unwrap();
@@ -2994,4 +2994,149 @@ fn test_assign_driver_succeeds_registered_active_driver() {
         client.get_delivery(&delivery_id).status,
         DeliveryStatus::Active
     );
+}
+
+// ── Owner index TTL: pages and lengths expire together, never apart ──────────
+//
+// `DeliveryIndex` pages and `DeliveryIndexLen` are persistent entries. If one
+// lapsed while the other survived, active deliveries would drop out of sender
+// / recipient / driver listings while their records remained. Every push
+// extends the page it writes and the length together; every read renews the
+// length and the pages it touches.
+
+const INDEX_DRIFT: u32 = ttl::LEDGER_TTL_EXTEND_TO - ttl::LEDGER_TTL_THRESHOLD + 1;
+
+fn delivery_index_ttls(
+    env: &Env,
+    contract_id: &Address,
+    owner: &Address,
+    kind: u32,
+    page: u32,
+) -> (u32, u32) {
+    let page_key = DataKey::DeliveryIndex(owner.clone(), kind, page);
+    let len_key = DataKey::DeliveryIndexLen(owner.clone(), kind);
+    env.as_contract(contract_id, || {
+        (
+            env.storage().persistent().get_ttl(&page_key),
+            env.storage().persistent().get_ttl(&len_key),
+        )
+    })
+}
+
+fn default_persistent_ttl(env: &Env, contract_id: &Address) -> u32 {
+    let key = Symbol::new(env, "ttl_probe");
+    env.as_contract(contract_id, || {
+        env.storage().persistent().set(&key, &1u32);
+        env.storage().persistent().get_ttl(&key)
+    })
+}
+
+#[test]
+fn test_delivery_index_push_extends_page_and_len_together() {
+    let env = Env::default();
+    let (client, shipper, driver, recipient, _, _) = setup_full(&env);
+    let contract_id = client.address.clone();
+
+    let id = client.create_delivery(&shipper, &recipient, &get_test_metadata(&env, 1));
+    client.assign_driver(&shipper, &id, &driver);
+
+    for (owner, kind) in [(&shipper, 0u32), (&recipient, 1), (&driver, 2)] {
+        let (page_ttl, len_ttl) = delivery_index_ttls(&env, &contract_id, owner, kind, 0);
+        assert_eq!(page_ttl, ttl::LEDGER_TTL_EXTEND_TO, "kind {kind} page");
+        assert_eq!(len_ttl, ttl::LEDGER_TTL_EXTEND_TO, "kind {kind} len");
+        assert!(page_ttl > default_persistent_ttl(&env, &contract_id));
+    }
+}
+
+#[test]
+fn test_delivery_index_batch_push_extends_page_and_len_together() {
+    let env = Env::default();
+    let (client, shipper, _driver, recipient, _, _) = setup_full(&env);
+    let contract_id = client.address.clone();
+
+    let mut metadata_list = soroban_sdk::Vec::new(&env);
+    metadata_list.push_back(get_test_metadata(&env, 1));
+    metadata_list.push_back(get_test_metadata(&env, 2));
+    client.create_deliveries_batch(&shipper, &recipient, &metadata_list);
+
+    for (owner, kind) in [(&shipper, 0u32), (&recipient, 1)] {
+        assert_eq!(
+            delivery_index_ttls(&env, &contract_id, owner, kind, 0),
+            (ttl::LEDGER_TTL_EXTEND_TO, ttl::LEDGER_TTL_EXTEND_TO)
+        );
+    }
+}
+
+#[test]
+fn test_delivery_index_push_after_idle_realigns_page_and_len() {
+    let env = Env::default();
+    let (client, shipper, _driver, recipient, _, _) = setup_full(&env);
+    let contract_id = client.address.clone();
+
+    let first = client.create_delivery(&shipper, &recipient, &get_test_metadata(&env, 1));
+    env.ledger().with_mut(|l| l.sequence_number += INDEX_DRIFT);
+    let (page_ttl, len_ttl) = delivery_index_ttls(&env, &contract_id, &shipper, 0, 0);
+    assert!(page_ttl < ttl::LEDGER_TTL_THRESHOLD && len_ttl < ttl::LEDGER_TTL_THRESHOLD);
+
+    let second = client.create_delivery(&shipper, &recipient, &get_test_metadata(&env, 2));
+    assert_eq!(
+        delivery_index_ttls(&env, &contract_id, &shipper, 0, 0),
+        (ttl::LEDGER_TTL_EXTEND_TO, ttl::LEDGER_TTL_EXTEND_TO)
+    );
+    let ids = client.get_deliveries_by_sender(&shipper);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.get(0), Some(first));
+    assert_eq!(ids.get(1), Some(second));
+}
+
+/// A full page is never written again; reading it must bring it back in line
+/// with the still-growing length so old IDs never vanish from listings.
+#[test]
+fn test_delivery_index_read_renews_full_page_with_len() {
+    let env = Env::default();
+    let (client, shipper, _driver, recipient, _, _) = setup_full(&env);
+    let contract_id = client.address.clone();
+    env.cost_estimate().disable_resource_limits();
+    env.cost_estimate().budget().reset_unlimited();
+
+    let mut metadata_list = soroban_sdk::Vec::new(&env);
+    for i in 0..64u64 {
+        metadata_list.push_back(get_test_metadata(&env, i + 1));
+    }
+    let batch_ids = client.create_deliveries_batch(&shipper, &recipient, &metadata_list);
+
+    env.ledger().with_mut(|l| l.sequence_number += INDEX_DRIFT);
+    let last = client.create_delivery(&shipper, &recipient, &get_test_metadata(&env, 65));
+    let (page0_ttl, len_ttl) = delivery_index_ttls(&env, &contract_id, &shipper, 0, 0);
+    assert_eq!(len_ttl, ttl::LEDGER_TTL_EXTEND_TO);
+    assert!(page0_ttl < ttl::LEDGER_TTL_THRESHOLD);
+
+    let ids = client.get_deliveries_page(&shipper, &0, &0, &100);
+    assert_eq!(ids.len(), 65);
+    assert_eq!(ids.get(0), batch_ids.get(0));
+    assert_eq!(ids.get(64), Some(last));
+    assert_eq!(
+        delivery_index_ttls(&env, &contract_id, &shipper, 0, 0),
+        (ttl::LEDGER_TTL_EXTEND_TO, ttl::LEDGER_TTL_EXTEND_TO)
+    );
+    assert_eq!(
+        delivery_index_ttls(&env, &contract_id, &shipper, 0, 1).0,
+        ttl::LEDGER_TTL_EXTEND_TO
+    );
+}
+
+#[test]
+fn test_delivery_index_read_for_unknown_owner_is_empty_and_writes_nothing() {
+    let env = Env::default();
+    let (client, _admin) = setup_bare(&env);
+    let contract_id = client.address.clone();
+    let stranger = Address::generate(&env);
+
+    assert_eq!(client.get_deliveries_page(&stranger, &0, &0, &10).len(), 0);
+    let len_key = DataKey::DeliveryIndexLen(stranger.clone(), 0);
+    let page_key = DataKey::DeliveryIndex(stranger.clone(), 0, 0);
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().persistent().has(&len_key));
+        assert!(!env.storage().persistent().has(&page_key));
+    });
 }

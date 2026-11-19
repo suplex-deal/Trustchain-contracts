@@ -152,6 +152,8 @@ export const ErrorCodes = {
   ProtocolPaused: 11,
   LimitExceeded: 12,
   TimelockNotElapsed: 13,
+  NoPendingContractChange: 14,
+  ContractChangeTimelockNotElapsed: 15,
 } as const;
 
 export interface ContractInvokeOptions {

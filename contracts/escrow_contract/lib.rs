@@ -3,6 +3,7 @@
 use shared_types::{
     escrow_key, events, is_admin, ttl, DeliveryRecord, DeliveryStatus, EscrowRecord, EscrowStatus,
     TrustchainError, PendingPeerContractChange, ProtocolConfig, StorageKey,
+    HIGH_VALUE_DISPUTE_THRESHOLD,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
@@ -516,21 +517,48 @@ fn settle_holdback_escrow(env: &Env, delivery_id: u64, mut record: EscrowRecord)
     record.status = EscrowStatus::Released;
     save_escrow(env, delivery_id, &record);
 
-    let total_locked_key = DataKey::TotalLocked(record.token.clone());
-    let current_total: i128 = env
-        .storage()
-        .persistent()
-        .get(&total_locked_key)
-        .unwrap_or(0);
-    env.storage().persistent().set(
-        &total_locked_key,
-        &current_total.saturating_sub(record.amount),
-    );
+    let total_locked_token = record.token.clone();
+    let current_total = read_total_locked(env, &total_locked_token);
+    write_total_locked(env, &total_locked_token, current_total.saturating_sub(record.amount));
 
     let fleet_management = get_fleet_management_contract(env);
     settle_escrow_funds(env, delivery_id, &record, fleet_management, driver_amount, platform_fee);
 
     (driver_amount, platform_fee)
+}
+
+/// Read the `TotalLocked` liability counter for `token`, renewing its TTL.
+///
+/// `TotalLocked` is the only thing standing between live escrow funds and
+/// `sweep_untracked_balance`: the sweep treats `balance - TotalLocked` as
+/// untracked. If the counter expired, live escrows would look like stray
+/// tokens and become sweepable. Every read and write therefore extends the
+/// entry to the same horizon as the escrow records it accounts for.
+fn read_total_locked(env: &Env, token: &Address) -> i128 {
+    let key = DataKey::TotalLocked(token.clone());
+    match env.storage().persistent().get::<_, i128>(&key) {
+        Some(total) => {
+            env.storage().persistent().extend_ttl(
+                &key,
+                ttl::LEDGER_TTL_THRESHOLD,
+                ttl::LEDGER_TTL_EXTEND_TO,
+            );
+            total
+        }
+        None => 0,
+    }
+}
+
+/// Write the `TotalLocked` counter for `token` and extend its TTL in the same
+/// step, so the counter never outlives less than the escrows it tracks.
+fn write_total_locked(env: &Env, token: &Address, total: i128) {
+    let key = DataKey::TotalLocked(token.clone());
+    env.storage().persistent().set(&key, &total);
+    env.storage().persistent().extend_ttl(
+        &key,
+        ttl::LEDGER_TTL_THRESHOLD,
+        ttl::LEDGER_TTL_EXTEND_TO,
+    );
 }
 
 fn save_escrow(env: &Env, delivery_id: u64, record: &EscrowRecord) {
@@ -592,6 +620,24 @@ enum DataKey {
 }
 
 const INDEX_PAGE: u32 = 64;
+
+/// Extend a persistent owner-index entry to the protocol-wide TTL horizon.
+fn extend_index_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+}
+
+/// Append `id` to `owner`'s index of the given `kind`.
+///
+/// Invariant: the page and the `EscrowIndexLen` counter are written together
+/// and always extended together, to the same horizon as the escrow records
+/// they enumerate. A lapsed page under a live length would silently drop IDs
+/// from enumeration; a lapsed length over live pages would make the next push
+/// restart at page 0 and overwrite history. Older, already-full pages are
+/// renewed by `index_page` whenever they are read; renewal on push is kept to
+/// the two entries written so the footprint stays constant however long an
+/// owner's history grows.
 #[rustfmt::skip]
 fn index_push(env: &Env, owner: &Address, kind: u32, id: u64) {
     let len_key = DataKey::EscrowIndexLen(owner.clone(), kind);
@@ -602,19 +648,36 @@ fn index_push(env: &Env, owner: &Address, kind: u32, id: u64) {
     page.push_back(id);
     env.storage().persistent().set(&key, &page);
     env.storage().persistent().set(&len_key, &(len + 1));
+    extend_index_ttl(env, &key);
+    extend_index_ttl(env, &len_key);
 }
 
+/// Read up to `limit` (capped at 100) IDs from `owner`'s index starting at
+/// `offset`. Reading renews the length and every page touched, so listings
+/// that are being consumed stay alive alongside the records they point to.
 #[rustfmt::skip]
 fn index_page(env: &Env, owner: Address, kind: u32, offset: u32, limit: u32) -> soroban_sdk::Vec<u64> {
-    let len: u32 = env.storage().persistent()
-        .get(&DataKey::EscrowIndexLen(owner.clone(), kind)).unwrap_or(0);
+    let len_key = DataKey::EscrowIndexLen(owner.clone(), kind);
+    let len: u32 = env.storage().persistent().get(&len_key).unwrap_or(0);
     let mut out = soroban_sdk::Vec::new(env);
+    if len == 0 {
+        return out;
+    }
+    extend_index_ttl(env, &len_key);
     let end = len.min(offset.saturating_add(limit.min(100)));
+    let mut loaded: Option<(u32, soroban_sdk::Vec<u64>)> = None;
     for i in offset.min(len)..end {
-        let page: soroban_sdk::Vec<u64> = env.storage().persistent()
-            .get(&DataKey::EscrowIndex(owner.clone(), kind, i / INDEX_PAGE))
-            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
-        if let Some(id) = page.get(i % INDEX_PAGE) { out.push_back(id); }
+        let page_no = i / INDEX_PAGE;
+        if loaded.as_ref().map(|(n, _)| *n) != Some(page_no) {
+            let key = DataKey::EscrowIndex(owner.clone(), kind, page_no);
+            let page: soroban_sdk::Vec<u64> = env.storage().persistent().get(&key)
+                .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+            if !page.is_empty() { extend_index_ttl(env, &key); }
+            loaded = Some((page_no, page));
+        }
+        if let Some((_, page)) = loaded.as_ref() {
+            if let Some(id) = page.get(i % INDEX_PAGE) { out.push_back(id); }
+        }
     }
     out
 }
@@ -1015,7 +1078,7 @@ impl EscrowContract {
         );
         extend_instance_ttl(&env);
         env.events().publish(
-            (Symbol::new(&env, "delivery_contract_change_proposed"),),
+            (Symbol::new(&env, "delivery_contract_proposed"),),
             (delivery_contract, activates_at),
         );
     }
@@ -1026,9 +1089,9 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::PendingDeliveryContract)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NoPendingContractChange));
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
         if env.ledger().timestamp() < pending.activates_at {
-            panic_with_error!(&env, EscrowError::ContractChangeTimelockNotElapsed);
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
         }
         env.storage()
             .instance()
@@ -1279,15 +1342,9 @@ impl EscrowContract {
         */
 
         let token_for_tracking = record_token_clone.clone();
-        let total_locked_key = DataKey::TotalLocked(token_for_tracking.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&total_locked_key, &current_total.saturating_add(amount));
+        let total_locked_token = token_for_tracking.clone();
+        let current_total = read_total_locked(&env, &total_locked_token);
+        write_total_locked(&env, &total_locked_token, current_total.saturating_add(amount));
 
         env.events().publish(
             (events::escrow_funded(&env),),
@@ -1500,16 +1557,9 @@ impl EscrowContract {
         // the batch funds as untracked surplus and drain them. A batch shares
         // one token, so accumulate in the loop and do a single read-modify-
         // write here instead of one storage round-trip per element.
-        let total_locked_key = DataKey::TotalLocked(token.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &total_locked_key,
-            &current_total.saturating_add(batch_total),
-        );
+        let total_locked_token = token.clone();
+        let current_total = read_total_locked(&env, &total_locked_token);
+        write_total_locked(&env, &total_locked_token, current_total.saturating_add(batch_total));
 
         count
     }
@@ -1590,16 +1640,9 @@ impl EscrowContract {
         record.status = EscrowStatus::Released;
         save_escrow(&env, delivery_id, &record);
 
-        let total_locked_key = DataKey::TotalLocked(record.token.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &total_locked_key,
-            &current_total.saturating_sub(record.amount),
-        );
+        let total_locked_token = record.token.clone();
+        let current_total = read_total_locked(&env, &total_locked_token);
+        write_total_locked(&env, &total_locked_token, current_total.saturating_sub(record.amount));
 
         let fleet_management = get_fleet_management_contract(&env);
         settle_escrow_funds(
@@ -1734,16 +1777,9 @@ impl EscrowContract {
         record.status = EscrowStatus::Refunded;
         save_escrow(&env, delivery_id, &record);
 
-        let total_locked_key = DataKey::TotalLocked(record.token.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &total_locked_key,
-            &current_total.saturating_sub(record.amount),
-        );
+        let total_locked_token = record.token.clone();
+        let current_total = read_total_locked(&env, &total_locked_token);
+        write_total_locked(&env, &total_locked_token, current_total.saturating_sub(record.amount));
 
         token::Client::new(&env, &record.token).transfer(
             &env.current_contract_address(),
@@ -1878,16 +1914,9 @@ impl EscrowContract {
 
         save_escrow(&env, delivery_id, &record);
 
-        let total_locked_key = DataKey::TotalLocked(record.token.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &total_locked_key,
-            &current_total.saturating_sub(record.amount),
-        );
+        let total_locked_token = record.token.clone();
+        let current_total = read_total_locked(&env, &total_locked_token);
+        write_total_locked(&env, &total_locked_token, current_total.saturating_sub(record.amount));
 
         if let Some((fleet_management, driver_amount, platform_fee)) = settle_params {
             settle_escrow_funds(
@@ -1971,16 +2000,9 @@ impl EscrowContract {
         record.status = EscrowStatus::Split;
         save_escrow(&env, delivery_id, &record);
 
-        let total_locked_key = DataKey::TotalLocked(record.token.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &total_locked_key,
-            &current_total.saturating_sub(record.amount),
-        );
+        let total_locked_token = record.token.clone();
+        let current_total = read_total_locked(&env, &total_locked_token);
+        write_total_locked(&env, &total_locked_token, current_total.saturating_sub(record.amount));
 
         if sender_amount > 0 {
             token::Client::new(&env, &record.token).transfer(
@@ -2093,7 +2115,7 @@ impl EscrowContract {
         if new_window_seconds < constants::MIN_HOLDBACK_WINDOW_SECONDS
             || new_window_seconds > constants::MAX_HOLDBACK_WINDOW_SECONDS
         {
-            panic_with_error!(&env, EscrowError::InvalidState);
+            panic_with_error!(&env, TrustchainError::InvalidState);
         }
         env.storage()
             .instance()
@@ -2198,12 +2220,8 @@ impl EscrowContract {
         let contract_balance =
             token::Client::new(&env, &record.token).balance(&env.current_contract_address());
 
-        let total_locked_key = DataKey::TotalLocked(record.token.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
+        let total_locked_token = record.token.clone();
+        let current_total = read_total_locked(&env, &total_locked_token);
 
         if contract_balance < record.amount || current_total > contract_balance {
             panic_with_error!(&env, TrustchainError::InsufficientFunds);
@@ -2212,10 +2230,7 @@ impl EscrowContract {
         // below, per checks-effects-interactions.
         record.status = EscrowStatus::Refunded;
         save_escrow(&env, delivery_id, &record);
-        env.storage().persistent().set(
-            &total_locked_key,
-            &current_total.saturating_sub(record.amount),
-        );
+        write_total_locked(&env, &total_locked_token, current_total.saturating_sub(record.amount));
 
         token::Client::new(&env, &record.token).transfer(
             &env.current_contract_address(),
@@ -2253,9 +2268,13 @@ impl EscrowContract {
         index_page(&env, owner, kind, offset, limit)
     }
 
+    /// Total escrow liability currently held for `token`.
+    ///
+    /// Reading renews the counter's TTL, so any caller (keeper, monitor or
+    /// the admin's own `get_untracked_balance` check) can keep the liability
+    /// record alive alongside the escrows it accounts for.
     pub fn get_total_locked(env: Env, token: Address) -> i128 {
-        let key = DataKey::TotalLocked(token);
-        env.storage().persistent().get(&key).unwrap_or(0)
+        read_total_locked(&env, &token)
     }
 
     /// Returns the amount of untracked balance for a given token without executing
