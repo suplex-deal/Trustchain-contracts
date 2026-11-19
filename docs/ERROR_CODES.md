@@ -77,9 +77,10 @@ Shared failures such as `InvalidState`, `Unauthorized`, `DeliveryNotFound`, and
 | 8 | `NoPendingTreasuryChange` | `confirm_fleet_treasury_update` called with no proposal pending. |
 | 10 | `FleetInactive` | Requested operation is invalid because the fleet has been deactivated. |
 | 11 | `InvalidConfiguration` | Signer configuration contains an invalid threshold, or a fleet was reactivated while already active. |
-| 12 | `InternalStorageError` | Roster compaction read a storage slot that should have existed but was absent. |
+| 12 | `InternalStorageError` | A roster read (`get_fleet_roster`, `renew_fleet_roster`) or roster compaction found a slot that should have existed but was absent. |
 | 13 | `DriverNotRegistered` | `accept_fleet_invite` was called by an address with no `DriverProfile` in the configured identity/reputation contract (Issue #451). |
 | 14 | `RosterFull` | The fleet already holds `MAX_ROSTER_SIZE` active drivers. |
+| 18 | `InviteExpired` | `accept_fleet_invite` was called after the invite's `INVITE_ACCEPTANCE_WINDOW_SECONDS` elapsed. Distinct from `InviteNotFound` (never invited). |
 
 Shared failures such as `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, and
 `TimelockNotElapsed` use `TrustchainError`.

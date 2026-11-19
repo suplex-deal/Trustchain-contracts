@@ -57,6 +57,7 @@ const ERROR_NAMES: Record<number, string[]> = {
     'FleetError.InternalStorageError',
   ],
   13: ['FleetError.DriverNotRegistered'],
+  18: ['FleetError.InviteExpired'],
 };
 
 export function formatSorobanError(

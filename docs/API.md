@@ -2142,8 +2142,13 @@ pub enum DriverFleetStatus {
     Pending,  // Driver invited but has not yet accepted
     Active,   // Driver accepted and is an active fleet member
     Removed,  // Driver was removed from the fleet history
+    Expired,  // Invited, but the acceptance window elapsed (reported, never stored)
 }
 ```
+
+`Expired` is computed by `get_driver_fleet_status` for a `Pending` invite older
+than `INVITE_ACCEPTANCE_WINDOW_SECONDS` (7 days); `None` still means the driver
+was never invited.
 
 #### `FleetProfile`
 ```rust
@@ -2173,7 +2178,7 @@ Initialize the fleet management contract.
 
 **State Changes:**
 - Sets the protocol admin
-- Resets the fleet counter to `0`
+- Resets the fleet counter to `0` and extends its TTL (and the instance TTL) to `LEDGER_TTL_EXTEND_TO`
 
 #### `set_identity_contract`
 Propose the identity/reputation contract used for automatic driver profile
@@ -2217,6 +2222,17 @@ Apply the pending escrow contract after its three-day review period.
 
 ### Fleet Operations
 
+> **Fleet counter lifetime.** `DataKey::FleetCounter` is a single persistent
+> entry that allocates fleet ids. Every state-changing fleet call (registration,
+> invites, acceptance, removal, treasury/signer changes, (de)activation, payout
+> routing) renews its TTL together with the instance TTL, so the counter stays
+> live during periods with no new registrations. If the whole contract is idle
+> for longer than `LEDGER_TTL_EXTEND_TO` ledgers the counter is archived, not
+> deleted: it must be restored (`RestoreFootprint`, or automatic restoration of
+> archived footprint entries) before the next `register_fleet`, which then
+> continues the existing id sequence and renews the counter. The contract never
+> re-seeds the counter from zero.
+
 #### `register_fleet`
 Register a new fleet, returning its assigned fleet ID.
 
@@ -2234,7 +2250,7 @@ Register a new fleet, returning its assigned fleet ID.
 **Events:** `fleet_registered`
 
 **State Changes:**
-- Increments and persists the fleet counter
+- Increments and persists the fleet counter, renewing its TTL
 - Creates and stores a `FleetProfile`
 - Calls `identity_reputation_contract.register_driver` for the owner when an identity contract is configured
 
@@ -2395,13 +2411,17 @@ Invite a driver to join a fleet.
 - `FleetNotFound` - No fleet with that ID exists
 - `FleetInactive` - The fleet has been deactivated
 - `Unauthorized` - Caller is not an authorized signer
-- `DriverAlreadyInvited` - A pending invite already exists for this driver
+- `DriverAlreadyInvited` - An unexpired pending invite already exists for this driver
 - `DriverAlreadyActive` - Driver is already an active member
 
 **Events:** `driver_invited`
 
 **State Changes:**
 - Stores `DriverFleetStatus::Pending` for `(fleet_id, driver)`
+- Stores `InviteExpiry(fleet_id, driver) = now + INVITE_ACCEPTANCE_WINDOW_SECONDS`
+- Extends both records to `LEDGER_TTL_EXTEND_TO` ledgers, which (by a compile-time assertion) outlives the acceptance window, so an invite cannot be archived while it is still acceptable
+
+**Notes:** A driver whose invite has expired (or was removed/cancelled) can be re-invited; re-inviting opens a fresh window.
 
 #### `cancel_invite`
 Cancel a driver's pending invite before it has been accepted.
@@ -2432,7 +2452,8 @@ Accept a pending fleet invite.
 **Errors:**
 - `FleetNotFound` - No fleet with that ID exists
 - `FleetInactive` - The fleet has been deactivated since the invite was issued
-- `InviteNotFound` - No pending invite exists for this driver
+- `InviteNotFound` - The driver was never invited, or the invite was cancelled/removed
+- `InviteExpired` - The driver was invited, but `INVITE_ACCEPTANCE_WINDOW_SECONDS` elapsed before acceptance; the fleet must re-invite
 - `DriverAlreadyActive` - Driver is already an active member
 - `RosterFull` - The fleet already holds `MAX_ROSTER_SIZE` active drivers
 - `DriverNotRegistered` - The accepting address has no `DriverProfile` in the
@@ -2445,7 +2466,7 @@ Accept a pending fleet invite.
 **State Changes:**
 - Sets `DriverFleetStatus::Active` for `(fleet_id, driver)`
 - Increments `FleetProfile.total_active_drivers`
-- Appends the driver as an indexed roster entry
+- Appends the driver as an indexed roster entry, giving the roster slot and the membership record the same TTL
 
 #### `remove_driver_from_fleet`
 Remove a driver from a fleet. Either a signer on the fleet or the driver themselves may initiate the removal.
@@ -2467,16 +2488,25 @@ Remove a driver from a fleet. Either a signer on the fleet or the driver themsel
 **State Changes:**
 - Sets the driver's membership status to `Removed`
 - Decrements `FleetProfile.total_active_drivers` if the driver was active
-- Compacts the roster index so it remains contiguous
+- Compacts the roster index so it remains contiguous; the driver moved into the vacated slot has its membership record renewed together with the slot
 
 #### `get_driver_fleet_status`
-Return the fleet membership status of a driver, or `None` if no record exists.
+Return the fleet membership status of a driver, or `None` if the driver was never invited.
 
 **Parameters:**
 - `fleet_id: FleetId` - Fleet identifier
 - `driver: Address` - Driver address
 
-**Returns:** `Option<DriverFleetStatus>`
+**Returns:** `Option<DriverFleetStatus>` — `Some(Expired)` for a pending invite whose acceptance window has elapsed
+
+#### `get_invite_expiry`
+Return the ledger timestamp after which a pending invite can no longer be accepted.
+
+**Parameters:**
+- `fleet_id: FleetId` - Fleet identifier
+- `driver: Address` - Driver address
+
+**Returns:** `Option<u64>` — `None` when the driver has no pending invite (never invited, active, removed, or a legacy invite issued before acceptance windows, which never expires). Still returned after the window has elapsed.
 
 #### `get_fleet_roster`
 Return a page of the active roster of drivers for a fleet.
@@ -2489,6 +2519,31 @@ Return a page of the active roster of drivers for a fleet.
 **Returns:** `Vec<Address>` — the requested page, clamped to the fleet's actual active driver count
 
 **Notes:** The roster is stored as individually keyed entries, so unbounded enumeration would exceed Soroban's ledger read-entry limits for large fleets (Issue #442). Iterate `offset` in `limit`-sized steps to page through the full roster.
+
+**Errors:**
+- `InternalStorageError` - A roster slot inside the active range is missing (slot and membership out of sync). Previously the slot was silently skipped, returning an incomplete page.
+
+#### `renew_fleet_roster`
+Renew the storage TTL of one page of a fleet's active roster without changing any state.
+
+**Parameters:**
+- `fleet_id: FleetId` - Fleet identifier
+- `offset: u32` - Roster index to start renewing from
+- `limit: u32` - Maximum entries to renew, clamped to `MAX_ROSTER_PAGE_SIZE` (100)
+
+**Authorization:** None (permissionless, like Soroban TTL extension)
+
+**Returns:** `u32` — number of roster entries renewed
+
+**Errors:**
+- `FleetNotFound` - No fleet with that ID exists
+- `InternalStorageError` - A roster slot inside the active range is missing
+
+**State Changes:**
+- Extends each `FleetRoster(fleet_id, index)` slot **and** the matching `DriverFleet(fleet_id, driver)` membership record to the same TTL
+- Extends the fleet profile, fleet counter and instance TTL
+
+**Notes:** Roster slots and membership records are separate ledger entries. Every code path that renews one for an active member renews the other, so they cannot expire independently; this function lets keepers renew a quiet roster page by page.
 
 #### `configure_signers`
 Configure the signer set and signature threshold for a fleet.
@@ -2703,6 +2758,15 @@ Grant or revoke cross-contract call authorization.
 
 **Events:** `authorized_contract_updated` - `(admin, contract_addr, authorized)`
 
+**Grant lifetime:** A grant is a persistent `AuthorizedContract(contract_addr)`
+entry. It is extended to `LEDGER_TTL_EXTEND_TO` when granted (here or in
+`init`) **and again on every authorized use**: each successful
+`increase_reputation`, `decrease_reputation`, `award_reputation`, or
+contract-initiated `suspend_driver` renews the caller's grant and the instance
+TTL. An active delivery/dispute peer therefore cannot lose permission to
+storage archival; only a grant that goes unused for the full TTL ages out.
+Revoking removes the entry, and renewal never re-creates it.
+
 #### `is_authorized_contract`
 Check whether a contract address is authorized to make cross-contract calls.
 
@@ -2710,6 +2774,9 @@ Check whether a contract address is authorized to make cross-contract calls.
 - `contract_addr: Address` - Contract address to check
 
 **Returns:** `bool`
+
+**Notes:** Read-only — it does not renew the grant (Issue #392). See the grant
+lifetime note on `set_authorized_contract`.
 
 #### `update_driver_kyc_status`
 Update a driver's KYC verification status.

@@ -59,6 +59,11 @@ export class IdentityReputationClient {
     return String(await this.invoker.call('get_dispute_contract', [], options));
   }
 
+  /**
+   * Whether `contractAddr` holds a reputation-update grant. Read-only: it does
+   * not renew the grant. Grants are renewed by `setAuthorizedContract` and by
+   * every authorized reputation update/suspension the peer performs.
+   */
   async isAuthorizedContract(contractAddr: string, options?: ContractInvokeOptions): Promise<boolean> {
     return Boolean(await this.invoker.call('is_authorized_contract', [address(contractAddr)], options));
   }

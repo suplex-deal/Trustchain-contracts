@@ -127,6 +127,17 @@ export class FleetManagementClient {
     return result == null ? null : (result as DriverFleetStatus);
   }
 
+  /**
+   * Return the ledger timestamp (seconds) after which the driver's pending
+   * invite can no longer be accepted, or `null` when the driver has no pending
+   * invite. Still returned once the window has elapsed; pair with
+   * `getDriverFleetStatus`, which reports `DriverFleetStatus.Expired` then.
+   */
+  async getInviteExpiry(fleetId: bigint, driver: string, options?: ContractInvokeOptions): Promise<bigint | null> {
+    const result = await this.invoker.call('get_invite_expiry', [u64(fleetId), address(driver)], options);
+    return result == null ? null : BigInt(String(result));
+  }
+
   async getFleetRoster(params: FleetManagementTypes.GetFleetRosterParams, options?: ContractInvokeOptions): Promise<string[]> {
     const offset = params.offset ?? 0;
     const limit = params.limit ?? DEFAULT_ROSTER_PAGE_SIZE;
@@ -136,6 +147,24 @@ export class FleetManagementClient {
       options
     );
     return (result as unknown[]).map((value) => String(value));
+  }
+
+  /**
+   * Renew the storage TTL of one page of a fleet's active roster, extending
+   * each roster slot together with the driver's membership record so the two
+   * never expire independently. Permissionless; changes no state. Returns the
+   * number of roster entries renewed (the window is clamped to the contract's
+   * `MAX_ROSTER_PAGE_SIZE` and the active driver count).
+   */
+  async renewFleetRoster(params: FleetManagementTypes.RenewFleetRosterParams, options?: ContractInvokeOptions): Promise<number> {
+    const offset = params.offset ?? 0;
+    const limit = params.limit ?? DEFAULT_ROSTER_PAGE_SIZE;
+    const result = await this.invoker.call(
+      'renew_fleet_roster',
+      [u64(params.fleetId), u32(offset), u32(limit)],
+      options
+    );
+    return Number(result);
   }
 
   async configureSigners(params: FleetManagementTypes.ConfigureSignersParams, options?: ContractInvokeOptions): Promise<void> {

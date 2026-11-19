@@ -80,6 +80,38 @@ fn require_escrow_not_paused(env: &Env) {
     }
 }
 
+/// Extend the TTL of a peer contract's `AuthorizedContract` grant and of the
+/// instance (which holds the delivery/dispute peer addresses).
+fn renew_authorized_contract(env: &Env, contract_addr: &Address) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::AuthorizedContract(contract_addr.clone()),
+        ttl::LEDGER_TTL_THRESHOLD,
+        ttl::LEDGER_TTL_EXTEND_TO,
+    );
+    env.storage()
+        .instance()
+        .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+}
+
+/// Require that `caller` holds an `AuthorizedContract` grant, and renew the
+/// grant while it is being used.
+///
+/// Grants are persistent entries with their own TTL. Previously they were
+/// only extended when `set_authorized_contract` wrote them, so a delivery or
+/// dispute peer that kept calling the reputation entry points every day could
+/// still have its grant archived once that one-off extension ran out, after
+/// which it would lose permission until an admin re-granted it. Renewing on
+/// every authorized use ties the grant's lifetime to the peer's activity; a
+/// grant that is genuinely unused still ages out normally. Unauthorized
+/// callers fail before any write, and the `is_authorized_contract` query
+/// remains read-only (Issue #392).
+fn require_authorized_contract(env: &Env, caller: &Address) {
+    if !IdentityReputationContract::is_authorized_contract(env.clone(), caller.clone()) {
+        panic_with_error!(env, TrustchainError::Unauthorized);
+    }
+    renew_authorized_contract(env, caller);
+}
+
 /// A suspended driver's profile is frozen for audit purposes: the reputation
 /// minting entry points (`increase_reputation`, `award_reputation`) must
 /// reject updates while `DriverStatus::Suspended` is set.  Penalties
@@ -113,14 +145,12 @@ impl IdentityReputationContract {
 
         // Register the initial two authorized contracts through the allowlist so
         // they can be revoked or rotated later without a contract migration.
+        // Grants are renewed on every authorized use afterwards.
         for contract_addr in [delivery_contract, dispute_contract] {
-            let key = DataKey::AuthorizedContract(contract_addr);
-            env.storage().persistent().set(&key, &true);
-            env.storage().persistent().extend_ttl(
-                &key,
-                ttl::LEDGER_TTL_THRESHOLD,
-                ttl::LEDGER_TTL_EXTEND_TO,
-            );
+            env.storage()
+                .persistent()
+                .set(&DataKey::AuthorizedContract(contract_addr.clone()), &true);
+            renew_authorized_contract(&env, &contract_addr);
         }
     }
 
@@ -148,11 +178,7 @@ impl IdentityReputationContract {
         let key = DataKey::AuthorizedContract(contract_addr.clone());
         if authorized {
             env.storage().persistent().set(&key, &true);
-            env.storage().persistent().extend_ttl(
-                &key,
-                ttl::LEDGER_TTL_THRESHOLD,
-                ttl::LEDGER_TTL_EXTEND_TO,
-            );
+            renew_authorized_contract(&env, &contract_addr);
         } else {
             env.storage().persistent().remove(&key);
         }
@@ -297,9 +323,9 @@ impl IdentityReputationContract {
         let key = DataKey::AuthorizedContract(contract_addr);
         // Read-only check: TTL extension is intentionally omitted here.
         // Extending TTL inside a query function incurs unexpected write fees
-        // and violates read-only semantics (Issue #392). TTL extension happens
-        // in set_authorized_contract, which is the only mutating path for
-        // authorization data.
+        // and violates read-only semantics (Issue #392). Grants are renewed
+        // by set_authorized_contract and by every authorized use of a
+        // reputation entry point (see `require_authorized_contract`).
         env.storage().persistent().get(&key).unwrap_or(false)
     }
 
@@ -465,9 +491,7 @@ impl IdentityReputationContract {
         if caller != delivery_contract && caller != dispute_contract {
             require_escrow_not_paused(&env);
         }
-        if !Self::is_authorized_contract(env.clone(), caller.clone()) {
-            panic_with_error!(&env, TrustchainError::Unauthorized);
-        }
+        require_authorized_contract(&env, &caller);
         caller.require_auth();
 
         let key = DataKey::DriverProfile(driver.clone());
@@ -532,9 +556,7 @@ impl IdentityReputationContract {
         if caller != delivery_contract && caller != dispute_contract {
             require_escrow_not_paused(&env);
         }
-        if !Self::is_authorized_contract(env.clone(), caller.clone()) {
-            panic_with_error!(&env, TrustchainError::Unauthorized);
-        }
+        require_authorized_contract(&env, &caller);
         caller.require_auth();
 
         let key = DataKey::DriverProfile(driver.clone());
@@ -576,9 +598,7 @@ impl IdentityReputationContract {
         if caller != delivery_contract && caller != dispute_contract {
             require_escrow_not_paused(&env);
         }
-        if !Self::is_authorized_contract(env.clone(), caller.clone()) {
-            panic_with_error!(&env, TrustchainError::Unauthorized);
-        }
+        require_authorized_contract(&env, &caller);
         caller.require_auth();
 
         let key = DataKey::DriverProfile(driver.clone());
@@ -641,10 +661,8 @@ impl IdentityReputationContract {
     #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional
     pub fn suspend_driver(env: Env, caller: Address, driver: Address) {
         caller.require_auth();
-        if !is_admin(&env, &caller)
-            && !Self::is_authorized_contract(env.clone(), caller.clone())
-        {
-            panic_with_error!(&env, TrustchainError::Unauthorized);
+        if !is_admin(&env, &caller) {
+            require_authorized_contract(&env, &caller);
         }
 
         let key = DataKey::DriverProfile(driver.clone());

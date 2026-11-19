@@ -39,6 +39,11 @@ export enum DriverFleetStatus {
   Pending = 'Pending',
   Active = 'Active',
   Removed = 'Removed',
+  /**
+   * Invited, but the acceptance window elapsed before the driver accepted.
+   * Distinct from `null` (never invited). The fleet may re-invite the driver.
+   */
+  Expired = 'Expired',
 }
 
 /** Mirrors the contract's `DriverStatus` enum in `shared_types`. */
