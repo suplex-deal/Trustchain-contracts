@@ -272,6 +272,58 @@ Read the configured volume thresholds and discounts.
 ##### `getSenderVolume(sender: string): Promise<number>`
 Read a sender's accumulated volume.
 
+#### Emergency freeze
+
+Both methods move a `Locked`/`Holdback` escrow to `Paused` without moving
+funds, keep already-`Paused` escrows unchanged, reject terminal escrows with
+`InvalidState`, and remain available while the protocol is paused. Frozen
+escrows are recovered through `resolveDispute` / `resolveDisputeSplit`.
+
+##### `adminFreezeFunds(params: AdminFreezeFundsParams): Promise<void>`
+Incident-response freeze. `params.admin` must be the escrow admin
+(`Unauthorized` otherwise).
+
+##### `freezeFunds(params: FreezeFundsParams): Promise<void>`
+`params.caller` must be the configured dispute resolution contract
+(`Unauthorized` otherwise); not usable by the admin.
+
+#### Delivery peer rotation
+
+The delivery peer contract is rotated in two steps so a compromised admin key
+cannot silently redirect delivery verification:
+
+##### `proposeDeliveryContract(params: ProposeDeliveryContractParams): Promise<void>`
+Admin only. Stores `params.deliveryContract` as pending; it activates after
+the peer-contract timelock. A new proposal replaces the pending one.
+
+##### `confirmDeliveryContract(): Promise<void>`
+Permissionless. Activates the pending address once `activatesAt` has passed.
+Rejects with `NoPendingContractChange` or `ContractChangeTimelockNotElapsed`
+and leaves the active address unchanged.
+
+##### `getDeliveryContract(): Promise<string | null>`
+The active delivery contract; `null` means verification is disabled.
+
+##### `getPendingDeliveryContract(): Promise<PendingDeliveryContractInfo | null>`
+The in-flight rotation (`deliveryContract`, `proposedBy`, `activatesAt`) or
+`null`.
+
+#### Admin handover
+
+Admin rights move in two signed steps; the stored admin only changes when the
+nominee accepts.
+
+##### `proposeAdmin(params: ProposeEscrowAdminParams): Promise<void>`
+Signed by `params.currentAdmin` (must be the stored admin). Nominates
+`params.newAdmin`, replacing any earlier nomination.
+
+##### `cancelAdminProposal(params: CancelEscrowAdminProposalParams): Promise<void>`
+Signed by the current admin. Rejects with `InvalidState` if nothing is pending.
+
+##### `acceptAdmin(params: AcceptEscrowAdminParams): Promise<void>`
+Signed by `params.newAdmin`, which must equal the pending nominee
+(`Unauthorized` otherwise). Completes the transfer.
+
 ### DeliveryClient
 
 #### Methods
@@ -317,6 +369,14 @@ Confirm that a delivery has been completed.
 
 ##### `getDelivery(deliveryId: bigint): Promise<DeliveryRecord>`
 Get a delivery record.
+
+##### `setRequireKyc(params: SetRequireKycParams): Promise<void>`
+Admin only. Turns the driver KYC gate on `assign_driver` on (`required: true`)
+or off. Rejects with `Unauthorized` for non-admin callers. The gate is skipped
+while no identity contract is configured.
+
+##### `getRequireKyc(): Promise<boolean>`
+Read the KYC gate; defaults to `false`.
 
 ##### `getDriverProfile(driver: string): Promise<DeliveryDriverProfile>`
 Get the dri

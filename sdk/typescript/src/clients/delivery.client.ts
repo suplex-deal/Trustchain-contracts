@@ -208,6 +208,25 @@ export class DeliveryClient {
   }
 
   /**
+   * Enable or disable the driver KYC gate (admin only).
+   *
+   * When enabled, `assign_driver` rejects drivers whose identity profile is not
+   * KYC-verified. The gate is skipped while no identity contract is configured.
+   * Rejects with `Unauthorized` when `params.admin` is not the stored admin and
+   * leaves the current setting unchanged.
+   */
+  async setRequireKyc(params: DeliveryTypes.SetRequireKycParams, options?: ContractInvokeOptions): Promise<void> {
+    await this.invoker.call('set_require_kyc', [address(params.admin), bool(params.required)], options);
+  }
+
+  /**
+   * Read the driver KYC gate. `false` (the contract default) means disabled.
+   */
+  async getRequireKyc(options?: ContractInvokeOptions): Promise<boolean> {
+    return Boolean(await this.invoker.call('get_require_kyc', [], options));
+  }
+
+  /**
    * Get the identity contract address
    */
   async getIdentityContract(options?: ContractInvokeOptions): Promise<string | null> {

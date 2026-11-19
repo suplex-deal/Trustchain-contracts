@@ -114,8 +114,22 @@ export interface MarkHoldbackEscrowParams {
   deliveryId: bigint;
 }
 
+/**
+ * Parameters for `freeze_funds`. `caller` must be the configured dispute
+ * resolution contract; any other address is rejected with `Unauthorized`.
+ */
 export interface FreezeFundsParams {
   caller: string;
+  deliveryId: bigint;
+}
+
+/**
+ * Parameters for `admin_freeze_funds`, the incident-response freeze.
+ */
+export interface AdminFreezeFundsParams {
+  /** Escrow admin; must sign and match the stored admin. */
+  admin: string;
+  /** Delivery whose escrow is frozen. */
   deliveryId: bigint;
 }
 
@@ -155,6 +169,50 @@ export interface PendingSettlementContractInfo {
 
 export interface ConfirmSettlementContractParams {
   admin: string;
+}
+
+/**
+ * Parameters for `set_delivery_contract`: proposes a timelocked rotation of
+ * the delivery peer contract. Admin only.
+ */
+export interface ProposeDeliveryContractParams {
+  /** Current escrow admin authorising the proposal. */
+  admin: string;
+  /** Proposed delivery contract address. */
+  deliveryContract: string;
+}
+
+/**
+ * Mirrors the Rust `PendingPeerContractChange` struct returned by
+ * `get_pending_delivery_contract`. `null` means no rotation is pending.
+ */
+export interface PendingDeliveryContractInfo {
+  /** The proposed delivery contract address. */
+  deliveryContract: string;
+  /** Admin that proposed the change. */
+  proposedBy: string;
+  /** Unix timestamp (seconds) after which the change may be confirmed. */
+  activatesAt: bigint;
+}
+
+/** Parameters for `propose_admin` (step 1 of the two-party admin handover). */
+export interface ProposeEscrowAdminParams {
+  /** Current admin; must sign and match the stored admin. */
+  currentAdmin: string;
+  /** Address nominated to become admin once it calls `acceptAdmin`. */
+  newAdmin: string;
+}
+
+/** Parameters for `cancel_admin_proposal`. */
+export interface CancelEscrowAdminProposalParams {
+  /** Current admin; must sign and match the stored admin. */
+  currentAdmin: string;
+}
+
+/** Parameters for `accept_admin` (step 2 of the two-party admin handover). */
+export interface AcceptEscrowAdminParams {
+  /** Nominated admin; must sign and match the pending proposal. */
+  newAdmin: string;
 }
 
 export interface SetFleetManagementContractParams {

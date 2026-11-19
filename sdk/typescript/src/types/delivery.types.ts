@@ -116,6 +116,16 @@ export interface UpdateDeliveryMetadataParams {
   metadata: DeliveryMetadata;
 }
 
+/**
+ * Parameters for `set_require_kyc`: toggles the KYC gate on `assign_driver`.
+ */
+export interface SetRequireKycParams {
+  /** Delivery contract admin; must sign and match the stored admin. */
+  admin: string;
+  /** `true` makes `assign_driver` reject drivers that are not KYC-verified. */
+  required: boolean;
+}
+
 export interface GetDeliveryParams {
   deliveryId: bigint;
 }
