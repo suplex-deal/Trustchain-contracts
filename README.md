@@ -413,3 +413,15 @@ Built with ❤️ by the Trustchain Team | Powered by Stellar Soroban
 
 <!-- handsoff-issue-569 -->
 - #569: Dispute: Restrict Dispute Creation on Already Delivered Deliveries Beyond Allowed Window
+
+<!-- handsoff-issue-71 -->
+- #71: Reject invalid index kinds in escrow pagination
+
+<!-- handsoff-issue-72 -->
+- #72: Prevent archived page gaps from silently shortening listings
+
+<!-- handsoff-issue-73 -->
+- #73: Prevent archived escrow page gaps from silently shortening listings
+
+<!-- handsoff-issue-74 -->
+- #74: Validate delivery ID allocation against existing records
