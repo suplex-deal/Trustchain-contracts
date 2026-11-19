@@ -229,6 +229,64 @@ export class EscrowClient {
   }
 
   /**
+   * Read the on-chain protocol version (independent of the crate/SDK version).
+   * See `SUPPORTED_PROTOCOL_VERSION` for the version this SDK targets.
+   */
+  async getProtocolVersion(options?: ContractInvokeOptions): Promise<number> {
+    return Number(await this.invoker.call('get_protocol_version', [], options));
+  }
+
+  /**
+   * Read the protocol slippage tolerance in basis points.
+   */
+  async getSlippageTolerance(options?: ContractInvokeOptions): Promise<number> {
+    return Number(await this.invoker.call('get_slippage_tolerance', [], options));
+  }
+
+  /**
+   * Update the protocol slippage tolerance in basis points (admin only).
+   *
+   * Values outside [0, MAX_SLIPPAGE_TOLERANCE_BPS] or non-integers throw a
+   * `RangeError` locally; the contract reverts with `InvalidSlippageTolerance`
+   * for the same inputs and with `Unauthorized` for a non-admin caller.
+   */
+  async updateSlippageTolerance(
+    params: EscrowTypes.UpdateSlippageToleranceParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    const bps = params.newSlippageBps;
+    if (!Number.isInteger(bps) || bps < 0 || bps > EscrowTypes.MAX_SLIPPAGE_TOLERANCE_BPS) {
+      throw new RangeError(
+        `slippage tolerance must be an integer within [0, ${EscrowTypes.MAX_SLIPPAGE_TOLERANCE_BPS}] bps, got ${bps}`
+      );
+    }
+    await this.invoker.call('update_slippage_tolerance', [address(params.admin), u32(bps)], options);
+  }
+
+  /**
+   * Set the holdback release delay in seconds (admin only).
+   *
+   * Out-of-range or non-integer values throw a `RangeError` locally; the
+   * contract enforces the same inclusive bounds and reverts with
+   * `InvalidState`. Reverts with `Unauthorized` for a non-admin caller.
+   */
+  async setHoldbackWindow(
+    params: EscrowTypes.SetHoldbackWindowParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    const windowSeconds = assertHoldbackWindow(params.windowSeconds);
+    await this.invoker.call('set_holdback_window', [address(params.admin), u64(windowSeconds)], options);
+  }
+
+  /**
+   * Read the holdback window currently applied, in seconds. Returns
+   * `DEFAULT_HOLDBACK_WINDOW_SECONDS` when the admin has never set one.
+   */
+  async getHoldbackWindow(options?: ContractInvokeOptions): Promise<bigint> {
+    return BigInt(String(await this.invoker.call('get_holdback_window', [], options)));
+  }
+
+  /**
    * Get an escrow record by delivery ID
    */
   async getEscrow(deliveryId: bigint, options?: ContractInvokeOptions): Promise<EscrowRecord> {
@@ -378,6 +436,22 @@ export class EscrowClient {
   async setPaused(admin: string, paused: boolean, options?: ContractInvokeOptions): Promise<void> {
     await this.invoker.call('set_paused', [address(admin), bool(paused)], options);
   }
+}
+
+function assertHoldbackWindow(value: bigint | number): bigint {
+  if (typeof value === 'number' && !Number.isInteger(value)) {
+    throw new RangeError(`holdback window must be an integer number of seconds, got ${value}`);
+  }
+  const seconds = BigInt(value);
+  if (
+    seconds < EscrowTypes.MIN_HOLDBACK_WINDOW_SECONDS ||
+    seconds > EscrowTypes.MAX_HOLDBACK_WINDOW_SECONDS
+  ) {
+    throw new RangeError(
+      `holdback window must be within [${EscrowTypes.MIN_HOLDBACK_WINDOW_SECONDS}, ${EscrowTypes.MAX_HOLDBACK_WINDOW_SECONDS}] seconds, got ${seconds}`
+    );
+  }
+  return seconds;
 }
 
 function xdrVoid() {

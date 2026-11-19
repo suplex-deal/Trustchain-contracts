@@ -16,6 +16,7 @@ export const EscrowErrorCodes = {
   InvalidDriver: 10,
   InvalidParties: 11,
   BatchTooLarge: 12,
+  InvalidSlippageTolerance: 13,
 } as const;
 
 export interface InitParams {
@@ -196,4 +197,34 @@ export interface DeliveryDisputedEvent {
 export interface DisputeResolvedEvent {
   deliveryId: bigint;
   resolver: string;
+}
+
+/** Holdback window applied when the admin has never set one (3 days). Mirrors `DEFAULT_HOLDBACK_WINDOW_SECONDS`. */
+export const DEFAULT_HOLDBACK_WINDOW_SECONDS = 259_200n;
+/** Smallest accepted holdback window (1 day). Mirrors `MIN_HOLDBACK_WINDOW_SECONDS`. */
+export const MIN_HOLDBACK_WINDOW_SECONDS = 86_400n;
+/** Largest accepted holdback window (365 days). Mirrors `MAX_HOLDBACK_WINDOW_SECONDS`. */
+export const MAX_HOLDBACK_WINDOW_SECONDS = 31_536_000n;
+
+export interface SetHoldbackWindowParams {
+  /** Must be the stored escrow admin; the call requires its auth. */
+  admin: string;
+  /** New window in seconds, inclusive range [MIN_HOLDBACK_WINDOW_SECONDS, MAX_HOLDBACK_WINDOW_SECONDS]. */
+  windowSeconds: bigint | number;
+}
+
+/**
+ * On-chain protocol/data version this SDK release targets. Mirrors
+ * `PROTOCOL_VERSION` in escrow_contract; compare against
+ * `EscrowClient.getProtocolVersion()` to detect an incompatible deployment.
+ */
+export const SUPPORTED_PROTOCOL_VERSION = 1;
+/** Largest accepted slippage tolerance (10%). Mirrors `MAX_SLIPPAGE_TOLERANCE_BPS`. */
+export const MAX_SLIPPAGE_TOLERANCE_BPS = 1000;
+
+export interface UpdateSlippageToleranceParams {
+  /** Must be the stored escrow admin; the call requires its auth. */
+  admin: string;
+  /** New tolerance in basis points, integer in the inclusive range [0, MAX_SLIPPAGE_TOLERANCE_BPS]. */
+  newSlippageBps: number;
 }

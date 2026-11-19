@@ -272,6 +272,31 @@ Read the configured volume thresholds and discounts.
 ##### `getSenderVolume(sender: string): Promise<number>`
 Read a sender's accumulated volume.
 
+##### `getProtocolVersion(): Promise<number>`
+Read the on-chain protocol version (`get_protocol_version`). This is independent
+of the package version; compare it with `SUPPORTED_PROTOCOL_VERSION` to detect a
+deployment this SDK does not target.
+
+##### `getSlippageTolerance(): Promise<number>`
+Read the protocol slippage tolerance in basis points.
+
+##### `updateSlippageTolerance(params: UpdateSlippageToleranceParams): Promise<void>`
+Update the slippage tolerance (admin only) via `update_slippage_tolerance`.
+`params.newSlippageBps` must be an integer in [0, `MAX_SLIPPAGE_TOLERANCE_BPS`
+(1000)]; other values throw a `RangeError` locally (the contract reverts with
+`InvalidSlippageTolerance`, `EscrowErrorCodes.InvalidSlippageTolerance = 13`).
+
+##### `setHoldbackWindow(params: SetHoldbackWindowParams): Promise<void>`
+Set the holdback release delay in seconds (admin only) via `set_holdback_window`.
+`params.windowSeconds` must be an integer in the inclusive range
+[`MIN_HOLDBACK_WINDOW_SECONDS` (1 day), `MAX_HOLDBACK_WINDOW_SECONDS` (365 days)];
+other values throw a `RangeError` before a transaction is built (the contract
+reverts with `InvalidState` for the same inputs).
+
+##### `getHoldbackWindow(): Promise<bigint>`
+Read the holdback window currently applied, in seconds. Returns
+`DEFAULT_HOLDBACK_WINDOW_SECONDS` (3 days) when the admin has never set one.
+
 ### DeliveryClient
 
 #### Methods
@@ -322,3 +347,38 @@ Get a delivery record.
 Get the dri
 
 /* … truncated 1736 chars — edit only what you need near the top … */
+
+### SettlementClient
+
+#### Escrow peer rotation
+
+The escrow peer is rotated through a timelocked, two-step flow. The active peer
+does not change until confirmation succeeds.
+
+```typescript
+await settlement.proposeEscrowContract({ admin, newEscrow: 'CNEW...' });
+
+const pending = await settlement.getPendingEscrowContract();
+// { address, proposedBy, activatesAt } | null
+
+// After PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS (3 days):
+if (isEscrowContractChangeReady(pending, ledgerTimestamp)) {
+  await settlement.confirmEscrowContract();
+}
+const active = await settlement.getEscrowContract();
+```
+
+- `proposeEscrowContract` → `set_escrow_contract` (admin only). A new proposal replaces any pending one and restarts the timelock.
+- `confirmEscrowContract` → `confirm_escrow_contract` (permissionless). Reverts with `NoPendingContractChange` or `ContractChangeTimelockNotElapsed` while `now < activatesAt`.
+- `getPendingEscrowContract` → `get_pending_escrow_contract`; `null` when nothing is pending.
+- `getEscrowContract` → `get_escrow_contract`.
+
+#### Swap router configuration
+
+```typescript
+await settlement.setSwapRouter({ admin, router: 'CROUTER...' });
+const router = await settlement.getSwapRouter(); // string | null
+```
+
+- `setSwapRouter` → `set_swap_router` (admin only; reverts with `Unauthorized` otherwise). `router` must be a contract (`C...`) address; other values throw a `TypeError` before any transaction is built.
+- `getSwapRouter` → `get_swap_router`; `null` means no router is configured and `execute_settlement_swap` will revert with `SwapRouterNotConfigured`.

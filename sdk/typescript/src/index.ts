@@ -3,7 +3,7 @@ export { DeliveryClient } from './clients/delivery.client';
 export { DisputeResolutionClient } from './clients/dispute_resolution.client';
 export { IdentityReputationClient } from './clients/identity_reputation.client';
 export { FleetManagementClient } from './clients/fleet_management.client';
-export { SettlementClient } from './clients/settlement.client';
+export { SettlementClient, isEscrowContractChangeReady } from './clients/settlement.client';
 export {
   ContractInvoker,
   address,
