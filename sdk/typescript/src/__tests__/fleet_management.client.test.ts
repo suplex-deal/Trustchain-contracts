@@ -256,3 +256,261 @@ describe('FleetManagementClient.reactivateFleet', () => {
     expect(scValToNative(args[1] as xdr.ScVal)).toBe(42n);
   });
 });
+
+// ── Pending peer-contract queries ─────────────────────────────────────────────
+
+const PROPOSED_ESCROW = 'CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR';
+const ACTIVATES_AT = 1_700_086_400n;
+
+/** Encode a Rust `PendingContractAddress` struct as the contract returns it. */
+function pendingContractScVal(addr: string, proposedBy: string, activatesAt: bigint): xdr.ScVal {
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('activates_at'),
+      val: nativeToScVal(activatesAt, { type: 'u64' }),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('address'),
+      val: nativeToScVal(addr, { type: 'address' }),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('proposed_by'),
+      val: nativeToScVal(proposedBy, { type: 'address' }),
+    }),
+  ]);
+}
+
+describe('FleetManagementClient.getPendingEscrowContract', () => {
+  it('calls get_pending_escrow_contract with no args and decodes the record', async () => {
+    const call = mockInvoker({
+      get_pending_escrow_contract: [pendingContractScVal(PROPOSED_ESCROW, ADMIN, ACTIVATES_AT)],
+    });
+
+    const result = await client().getPendingEscrowContract();
+
+    expect(result).toEqual({
+      address: PROPOSED_ESCROW,
+      proposedBy: ADMIN,
+      activatesAt: ACTIVATES_AT,
+    });
+    expect(typeof result?.activatesAt).toBe('bigint');
+    expect(call).toHaveBeenCalledTimes(1);
+    const [fn, args] = call.mock.calls[0];
+    expect(fn).toBe('get_pending_escrow_contract');
+    expect(args).toHaveLength(0);
+  });
+
+  it('preserves u64 activation times beyond Number.MAX_SAFE_INTEGER', async () => {
+    const huge = 18_446_744_073_709_551_615n; // u64::MAX (saturating_add ceiling)
+    mockInvoker({
+      get_pending_escrow_contract: [pendingContractScVal(PROPOSED_ESCROW, ADMIN, huge)],
+    });
+
+    const result = await client().getPendingEscrowContract();
+
+    expect(result?.activatesAt).toBe(huge);
+  });
+
+  it('returns null when no escrow change is pending (Option::None)', async () => {
+    mockInvoker({ get_pending_escrow_contract: [nativeToScVal(null)] });
+
+    expect(await client().getPendingEscrowContract()).toBeNull();
+  });
+
+  it('returns null when the invoker resolves undefined', async () => {
+    jest.spyOn(ContractInvoker.prototype, 'call').mockResolvedValue(undefined as never);
+
+    expect(await client().getPendingEscrowContract()).toBeNull();
+  });
+
+  it('rejects a malformed record instead of returning partial state', async () => {
+    jest
+      .spyOn(ContractInvoker.prototype, 'call')
+      .mockResolvedValue({ address: PROPOSED_ESCROW, proposed_by: ADMIN } as never);
+
+    await expect(client().getPendingEscrowContract()).rejects.toThrow(
+      "get_pending_escrow_contract: malformed record, missing field 'activates_at'",
+    );
+  });
+
+  it('propagates a contract/simulation error to the caller', async () => {
+    jest
+      .spyOn(ContractInvoker.prototype, 'call')
+      .mockRejectedValue(new Error('Soroban simulation failed'));
+
+    await expect(client().getPendingEscrowContract()).rejects.toThrow('Soroban simulation failed');
+  });
+});
+
+const NEW_OWNER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+
+/** Encode a Rust `PendingFleetOwnerReassignment` struct as the contract returns it. */
+function pendingOwnerScVal(newOwner: string, admin: string): xdr.ScVal {
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('admin'),
+      val: nativeToScVal(admin, { type: 'address' }),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('new_owner'),
+      val: nativeToScVal(newOwner, { type: 'address' }),
+    }),
+  ]);
+}
+
+describe('FleetManagementClient.getPendingFleetOwnerReassignment', () => {
+  it('calls get_pending_fleet_owner_reassignment with the fleet id and decodes the record', async () => {
+    const call = mockInvoker({
+      get_pending_fleet_owner_reassignment: [pendingOwnerScVal(NEW_OWNER, ADMIN)],
+    });
+
+    const result = await client().getPendingFleetOwnerReassignment(7n);
+
+    expect(result).toEqual({ newOwner: NEW_OWNER, admin: ADMIN });
+    expect(call).toHaveBeenCalledTimes(1);
+    const [fn, args] = call.mock.calls[0];
+    expect(fn).toBe('get_pending_fleet_owner_reassignment');
+    expect(args).toHaveLength(1);
+    expect(scValToNative(args[0] as xdr.ScVal)).toBe(7n);
+  });
+
+  it('encodes u64::MAX fleet ids without loss', async () => {
+    const call = mockInvoker({ get_pending_fleet_owner_reassignment: [nativeToScVal(null)] });
+    const maxId = 18_446_744_073_709_551_615n;
+
+    await client().getPendingFleetOwnerReassignment(maxId);
+
+    expect(scValToNative(call.mock.calls[0][1][0] as xdr.ScVal)).toBe(maxId);
+  });
+
+  it('returns null when no reassignment is pending (Option::None)', async () => {
+    mockInvoker({ get_pending_fleet_owner_reassignment: [nativeToScVal(null)] });
+
+    expect(await client().getPendingFleetOwnerReassignment(7n)).toBeNull();
+  });
+
+  it('returns null when the invoker resolves undefined', async () => {
+    jest.spyOn(ContractInvoker.prototype, 'call').mockResolvedValue(undefined as never);
+
+    expect(await client().getPendingFleetOwnerReassignment(7n)).toBeNull();
+  });
+
+  it('rejects a malformed record instead of returning partial state', async () => {
+    jest
+      .spyOn(ContractInvoker.prototype, 'call')
+      .mockResolvedValue({ admin: ADMIN } as never);
+
+    await expect(client().getPendingFleetOwnerReassignment(7n)).rejects.toThrow(
+      "get_pending_fleet_owner_reassignment: malformed record, missing field 'new_owner'",
+    );
+  });
+
+  it('rejects a non-struct value', async () => {
+    jest.spyOn(ContractInvoker.prototype, 'call').mockResolvedValue([NEW_OWNER, ADMIN] as never);
+
+    await expect(client().getPendingFleetOwnerReassignment(7n)).rejects.toThrow(
+      'get_pending_fleet_owner_reassignment: expected a struct record, received array',
+    );
+  });
+
+  it('propose → inspect → accept flow targets the expected entrypoints', async () => {
+    const call = mockInvoker({
+      admin_reassign_fleet_owner: [nativeToScVal(null)],
+      get_pending_fleet_owner_reassignment: [pendingOwnerScVal(NEW_OWNER, ADMIN)],
+      accept_fleet_owner_reassignment: [nativeToScVal(null)],
+    });
+
+    const fleetClient = client();
+    await fleetClient.adminReassignFleetOwner({ admin: ADMIN, fleetId: 7n, newOwner: NEW_OWNER });
+    const pending = await fleetClient.getPendingFleetOwnerReassignment(7n);
+    expect(pending?.newOwner).toBe(NEW_OWNER);
+    await fleetClient.acceptFleetOwnerReassignment(7n, pending!.newOwner);
+
+    expect(call.mock.calls.map((c) => c[0])).toEqual([
+      'admin_reassign_fleet_owner',
+      'get_pending_fleet_owner_reassignment',
+      'accept_fleet_owner_reassignment',
+    ]);
+  });
+});
+
+const PROPOSED_IDENTITY = 'CBQHNAXSI55GX2GN6D67GK7BHVPSLJUGZQEU7WJ5LKR5PNUCGLIMAO4K';
+
+describe('FleetManagementClient.getPendingIdentityContract', () => {
+  it('calls get_pending_identity_contract with no args and decodes the record', async () => {
+    const call = mockInvoker({
+      get_pending_identity_contract: [pendingContractScVal(PROPOSED_IDENTITY, ADMIN, ACTIVATES_AT)],
+    });
+
+    const result = await client().getPendingIdentityContract();
+
+    expect(result).toEqual({
+      address: PROPOSED_IDENTITY,
+      proposedBy: ADMIN,
+      activatesAt: ACTIVATES_AT,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+    const [fn, args] = call.mock.calls[0];
+    expect(fn).toBe('get_pending_identity_contract');
+    expect(args).toHaveLength(0);
+  });
+
+  it('decodes an activation time of zero (boundary) as 0n rather than treating it as absent', async () => {
+    mockInvoker({
+      get_pending_identity_contract: [pendingContractScVal(PROPOSED_IDENTITY, ADMIN, 0n)],
+    });
+
+    const result = await client().getPendingIdentityContract();
+
+    expect(result).not.toBeNull();
+    expect(result?.activatesAt).toBe(0n);
+  });
+
+  it('returns null when no identity change is pending (Option::None)', async () => {
+    mockInvoker({ get_pending_identity_contract: [nativeToScVal(null)] });
+
+    expect(await client().getPendingIdentityContract()).toBeNull();
+  });
+
+  it('returns null when the invoker resolves undefined', async () => {
+    jest.spyOn(ContractInvoker.prototype, 'call').mockResolvedValue(undefined as never);
+
+    expect(await client().getPendingIdentityContract()).toBeNull();
+  });
+
+  it('rejects a malformed record instead of returning partial state', async () => {
+    jest
+      .spyOn(ContractInvoker.prototype, 'call')
+      .mockResolvedValue({ address: PROPOSED_IDENTITY, activates_at: 1n } as never);
+
+    await expect(client().getPendingIdentityContract()).rejects.toThrow(
+      "get_pending_identity_contract: malformed record, missing field 'proposed_by'",
+    );
+  });
+
+  it('propagates a contract/simulation error to the caller', async () => {
+    jest
+      .spyOn(ContractInvoker.prototype, 'call')
+      .mockRejectedValue(new Error('Soroban simulation failed'));
+
+    await expect(client().getPendingIdentityContract()).rejects.toThrow('Soroban simulation failed');
+  });
+
+  it('does not confuse the identity and escrow pending queries', async () => {
+    const call = mockInvoker({
+      get_pending_identity_contract: [pendingContractScVal(PROPOSED_IDENTITY, ADMIN, ACTIVATES_AT)],
+      get_pending_escrow_contract: [nativeToScVal(null)],
+    });
+
+    const fleetClient = client();
+    const identity = await fleetClient.getPendingIdentityContract();
+    const escrow = await fleetClient.getPendingEscrowContract();
+
+    expect(identity?.address).toBe(PROPOSED_IDENTITY);
+    expect(escrow).toBeNull();
+    expect(call.mock.calls.map((c) => c[0])).toEqual([
+      'get_pending_identity_contract',
+      'get_pending_escrow_contract',
+    ]);
+  });
+});

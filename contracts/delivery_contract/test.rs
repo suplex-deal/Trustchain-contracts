@@ -874,7 +874,7 @@ fn test_mark_in_transit_rejects_missing_escrow() {
     // MockEscrowContract's get_escrow failure trigger fires.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &7776u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -896,7 +896,7 @@ fn test_mark_in_transit_rejects_refunded_escrow() {
     // reports a Refunded (non-Locked) escrow for it.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &8887u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -1616,7 +1616,7 @@ fn test_confirm_delivery_state_rollback_on_escrow_failure() {
     // MockEscrowContract's delivery_id == 9999 failure trigger actually fires.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -1636,7 +1636,7 @@ fn test_delivery_state_unchanged_after_confirm_escrow_failure() {
     // MockEscrowContract's delivery_id == 9999 failure trigger actually fires.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -1675,7 +1675,7 @@ fn test_cancel_delivery_state_rollback_on_escrow_failure() {
     // MockEscrowContract's delivery_id == 9999 failure trigger actually fires.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -1694,7 +1694,7 @@ fn test_delivery_state_unchanged_after_cancel_escrow_failure() {
     // MockEscrowContract's delivery_id == 9999 failure trigger actually fires.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -1727,7 +1727,7 @@ fn test_raise_dispute_state_rollback_on_escrow_failure() {
     // MockEscrowContract's delivery_id == 9999 failure trigger actually fires.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -1747,7 +1747,7 @@ fn test_delivery_state_unchanged_after_raise_dispute_escrow_failure() {
     // MockEscrowContract's delivery_id == 9999 failure trigger actually fires.
     env.as_contract(&client.address, || {
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::DeliveryCounter, &9998u64);
     });
     let delivery_id = client.create_delivery(&shipper, &recipient, &metadata);
@@ -2994,4 +2994,121 @@ fn test_assign_driver_succeeds_registered_active_driver() {
         client.get_delivery(&delivery_id).status,
         DeliveryStatus::Active
     );
+}
+
+// ── Delivery ID counter durability ──────────────────────────────────────────
+//
+// The counter must live in instance storage so it is renewed together with
+// the contract instance and can never be archived on its own during quiet
+// periods. An absent counter after initialization must be rejected instead of
+// silently restarting at zero (which would reissue existing IDs).
+
+#[test]
+fn test_delivery_counter_is_stored_in_instance_storage() {
+    let env = Env::default();
+    let (client, _admin) = setup_bare(&env);
+
+    env.as_contract(&client.address, || {
+        let counter: Option<u64> = env.storage().instance().get(&DataKey::DeliveryCounter);
+        assert_eq!(counter, Some(0));
+        assert!(!env.storage().persistent().has(&DataKey::DeliveryCounter));
+    });
+}
+
+#[test]
+fn test_create_delivery_advances_instance_counter_and_renews_instance_ttl() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    let recipient = Address::generate(&env);
+
+    let first = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+    let second = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 2));
+    assert_eq!(u64::from(first), 1);
+    assert_eq!(u64::from(second), 2);
+
+    env.as_contract(&client.address, || {
+        let counter: Option<u64> = env.storage().instance().get(&DataKey::DeliveryCounter);
+        assert_eq!(counter, Some(2));
+        use soroban_sdk::testutils::storage::Instance as _;
+        assert!(env.storage().instance().get_ttl() >= ttl::LEDGER_TTL_THRESHOLD);
+    });
+}
+
+#[test]
+fn test_batch_creation_continues_counter_sequence() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    let recipient = Address::generate(&env);
+
+    let single = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+    let mut list = soroban_sdk::Vec::new(&env);
+    list.push_back(get_test_metadata(&env, 2));
+    list.push_back(get_test_metadata(&env, 3));
+    let batch = client.create_deliveries_batch(&admin, &recipient, &list);
+
+    assert_eq!(u64::from(single), 1);
+    assert_eq!(u64::from(batch.get(0).unwrap()), 2);
+    assert_eq!(u64::from(batch.get(1).unwrap()), 3);
+}
+
+/// Deployments that predate the instance-storage layout keep the counter in
+/// persistent storage. The legacy value must be honoured and migrated so
+/// already-issued IDs are never reused.
+#[test]
+fn test_legacy_persistent_counter_is_honoured_and_migrated() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    let recipient = Address::generate(&env);
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::DeliveryCounter);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DeliveryCounter, &41u64);
+    });
+
+    let id = client.create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+    assert_eq!(u64::from(id), 42);
+
+    env.as_contract(&client.address, || {
+        let counter: Option<u64> = env.storage().instance().get(&DataKey::DeliveryCounter);
+        assert_eq!(counter, Some(42));
+        assert!(!env.storage().persistent().has(&DataKey::DeliveryCounter));
+    });
+}
+
+#[test]
+fn test_create_delivery_rejects_missing_counter_after_init() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    let recipient = Address::generate(&env);
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::DeliveryCounter);
+    });
+
+    let result = client.try_create_delivery(&admin, &recipient, &get_test_metadata(&env, 1));
+    match result {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::NotInitialized.into()),
+        _ => panic!("Expected TrustchainError::NotInitialized"),
+    }
+}
+
+#[test]
+fn test_create_deliveries_batch_rejects_missing_counter_after_init() {
+    let env = Env::default();
+    let (client, admin) = setup_bare(&env);
+    let recipient = Address::generate(&env);
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::DeliveryCounter);
+    });
+
+    let mut list = soroban_sdk::Vec::new(&env);
+    list.push_back(get_test_metadata(&env, 1));
+    let result = client.try_create_deliveries_batch(&admin, &recipient, &list);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::NotInitialized.into()),
+        _ => panic!("Expected TrustchainError::NotInitialized"),
+    }
 }

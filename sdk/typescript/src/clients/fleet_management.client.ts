@@ -34,6 +34,17 @@ export class FleetManagementClient {
   }
 
   /**
+   * Return the identity contract change queued by `setIdentityContract`, or
+   * `null` when no change is pending. Lets operators inspect the pending peer
+   * address and its activation time before calling `confirmIdentityContract`.
+   * Exposes the on-chain `get_pending_identity_contract` query.
+   */
+  async getPendingIdentityContract(options?: ContractInvokeOptions): Promise<FleetManagementTypes.PendingContractAddress | null> {
+    const value = await this.invoker.call('get_pending_identity_contract', [], options);
+    return value == null ? null : decodePendingContractAddress(value, 'get_pending_identity_contract');
+  }
+
+  /**
    * Return the configured identity_reputation_contract address, if any.
    * Returns `null` when no identity contract has been wired to this fleet contract yet.
    * Exposes the on-chain `get_identity_contract` read getter (Issue #486).
@@ -49,6 +60,17 @@ export class FleetManagementClient {
 
   async confirmEscrowContract(options?: ContractInvokeOptions): Promise<void> {
     await this.invoker.call('confirm_escrow_contract', [], options);
+  }
+
+  /**
+   * Return the escrow contract change queued by `setEscrowContract`, or `null`
+   * when no change is pending. Lets operators verify which escrow address will
+   * become active (and when) before anyone calls `confirmEscrowContract`.
+   * Exposes the on-chain `get_pending_escrow_contract` query.
+   */
+  async getPendingEscrowContract(options?: ContractInvokeOptions): Promise<FleetManagementTypes.PendingContractAddress | null> {
+    const value = await this.invoker.call('get_pending_escrow_contract', [], options);
+    return value == null ? null : decodePendingContractAddress(value, 'get_pending_escrow_contract');
   }
 
   /**
@@ -83,6 +105,20 @@ export class FleetManagementClient {
 
   async acceptFleetOwnerReassignment(fleetId: bigint, newOwner: string, options?: ContractInvokeOptions): Promise<void> {
     await this.invoker.call('accept_fleet_owner_reassignment', [address(newOwner), u64(fleetId)], options);
+  }
+
+  /**
+   * Return the admin-proposed owner reassignment pending for `fleetId`, or
+   * `null` when none is pending. Lets the incoming owner inspect who proposed
+   * the change before calling `acceptFleetOwnerReassignment`.
+   * Exposes the on-chain `get_pending_fleet_owner_reassignment` query.
+   */
+  async getPendingFleetOwnerReassignment(
+    fleetId: bigint,
+    options?: ContractInvokeOptions,
+  ): Promise<FleetManagementTypes.PendingFleetOwnerReassignment | null> {
+    const value = await this.invoker.call('get_pending_fleet_owner_reassignment', [u64(fleetId)], options);
+    return value == null ? null : decodePendingFleetOwnerReassignment(value);
   }
 
   async adminForceUpdateTreasury(params: FleetManagementTypes.AdminForceUpdateTreasuryParams, options?: ContractInvokeOptions): Promise<void> {
@@ -168,5 +204,39 @@ function decodePendingTreasury(value: unknown): PendingTreasuryChange {
   return {
     treasury: String(change.treasury),
     activatesAt: Number(change.activates_at),
+  };
+}
+
+/** Read a required field from a decoded contract record, rejecting absent values. */
+function requireField(record: Record<string, unknown>, field: string, source: string): unknown {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    throw new Error(`${source}: malformed record, missing field '${field}'`);
+  }
+  return value;
+}
+
+function asRecord(value: unknown, source: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${source}: expected a struct record, received ${Array.isArray(value) ? 'array' : typeof value}`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function decodePendingContractAddress(value: unknown, source: string): FleetManagementTypes.PendingContractAddress {
+  const record = asRecord(value, source);
+  return {
+    address: String(requireField(record, 'address', source)),
+    proposedBy: String(requireField(record, 'proposed_by', source)),
+    activatesAt: BigInt(String(requireField(record, 'activates_at', source))),
+  };
+}
+
+function decodePendingFleetOwnerReassignment(value: unknown): FleetManagementTypes.PendingFleetOwnerReassignment {
+  const source = 'get_pending_fleet_owner_reassignment';
+  const record = asRecord(value, source);
+  return {
+    newOwner: String(requireField(record, 'new_owner', source)),
+    admin: String(requireField(record, 'admin', source)),
   };
 }

@@ -139,6 +139,32 @@ const fleet = await fleetClient.getFleet(fleetId);
 console.log(fleet.drivers); // ['GC789...']
 ```
 
+### Inspect Pending Fleet Changes
+
+Timelocked fleet changes can be inspected before they are confirmed. Each
+getter returns `null` when nothing is pending.
+
+```typescript
+// Identity peer queued by setIdentityContract, awaiting confirmIdentityContract
+const pendingIdentity = await fleetClient.getPendingIdentityContract();
+if (pendingIdentity && BigInt(Math.floor(Date.now() / 1000)) >= pendingIdentity.activatesAt) {
+  await fleetClient.confirmIdentityContract();
+}
+
+// Escrow peer queued by setEscrowContract, awaiting confirmEscrowContract
+const pendingEscrow = await fleetClient.getPendingEscrowContract();
+if (pendingEscrow) {
+  console.log(pendingEscrow.address, pendingEscrow.proposedBy, pendingEscrow.activatesAt); // activatesAt: bigint (unix seconds)
+}
+
+// Owner reassignment proposed by adminReassignFleetOwner, awaiting the
+// incoming owner's acceptFleetOwnerReassignment
+const pendingOwner = await fleetClient.getPendingFleetOwnerReassignment(fleetId);
+if (pendingOwner) {
+  console.log(pendingOwner.newOwner, pendingOwner.admin);
+}
+```
+
 ## Error Handling
 
 The SDK surfaces contract failures as typed error enums so callers can branch on

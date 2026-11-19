@@ -80,6 +80,47 @@ pub enum DataKey {
     RequireKyc,
 }
 
+/// Read the delivery ID counter.
+///
+/// The counter is stored in instance storage so that it lives exactly as long
+/// as the contract instance and is renewed by every instance TTL extension.
+/// Deployments that predate this layout kept the counter in persistent
+/// storage; that legacy value is still honoured (and migrated on the next
+/// write) so already-issued IDs are never reused.
+///
+/// An absent counter after initialization is treated as a hard error rather
+/// than silently restarting from zero, because restarting would hand out IDs
+/// that collide with existing delivery records.
+fn read_delivery_counter(env: &Env) -> u64 {
+    if let Some(counter) = env.storage().instance().get(&DataKey::DeliveryCounter) {
+        return counter;
+    }
+    env.storage()
+        .persistent()
+        .get(&DataKey::DeliveryCounter)
+        .unwrap_or_else(|| panic_with_error!(env, TrustchainError::NotInitialized))
+}
+
+/// Persist the delivery ID counter in instance storage, dropping any legacy
+/// persistent copy so only one authoritative value exists.
+fn write_delivery_counter(env: &Env, counter: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::DeliveryCounter, &counter);
+    env.storage()
+        .instance()
+        .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+    if env.storage().persistent().has(&DataKey::DeliveryCounter) {
+        env.storage().persistent().remove(&DataKey::DeliveryCounter);
+    }
+}
+
+fn next_delivery_counter(env: &Env, counter: u64) -> u64 {
+    counter
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, TrustchainError::InvalidState))
+}
+
 const INDEX_PAGE: u32 = 64;
 #[rustfmt::skip]
 fn index_push(env: &Env, owner: &Address, kind: u32, id: DeliveryId) {
@@ -207,14 +248,11 @@ impl DeliveryContract {
         env.storage()
             .instance()
             .set(&DataKey::EscrowContract, &escrow_contract);
-        env.storage()
-            .persistent()
-            .set(&DataKey::DeliveryCounter, &0u64);
-        env.storage().persistent().extend_ttl(
-            &DataKey::DeliveryCounter,
-            ttl::LEDGER_TTL_THRESHOLD,
-            ttl::LEDGER_TTL_EXTEND_TO,
-        );
+        // The delivery ID counter lives in instance storage so it shares the
+        // contract instance's lifetime and can never be archived independently
+        // during quiet periods (which would otherwise reset IDs to zero and
+        // collide with still-live delivery records).
+        write_delivery_counter(&env, 0);
 
         env.events().publish(
             (events::delivery_contract_initialized(&env),),
@@ -445,20 +483,8 @@ impl DeliveryContract {
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
 
-        let mut counter: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DeliveryCounter)
-            .unwrap_or(0);
-        counter += 1;
-        env.storage()
-            .persistent()
-            .set(&DataKey::DeliveryCounter, &counter);
-        env.storage().persistent().extend_ttl(
-            &DataKey::DeliveryCounter,
-            ttl::LEDGER_TTL_THRESHOLD,
-            ttl::LEDGER_TTL_EXTEND_TO,
-        );
+        let counter = next_delivery_counter(&env, read_delivery_counter(&env));
+        write_delivery_counter(&env, counter);
 
         let delivery_id = DeliveryId::from(counter);
 
@@ -548,25 +574,20 @@ impl DeliveryContract {
         }
 
         let mut result = soroban_sdk::Vec::new(&env);
-        let mut counter: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DeliveryCounter)
-            .unwrap_or(0);
+        // Keep the instance (and therefore the delivery counter) alive for
+        // batch creation exactly as `create_delivery` does.
+        env.storage()
+            .instance()
+            .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+
+        let mut counter: u64 = read_delivery_counter(&env);
 
         let timestamp = env.ledger().timestamp();
 
         for i in 0..metadata_list.len() {
             if let Some(mut metadata) = metadata_list.get(i) {
-                counter += 1;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::DeliveryCounter, &counter);
-                env.storage().persistent().extend_ttl(
-                    &DataKey::DeliveryCounter,
-                    ttl::LEDGER_TTL_THRESHOLD,
-                    ttl::LEDGER_TTL_EXTEND_TO,
-                );
+                counter = next_delivery_counter(&env, counter);
+                write_delivery_counter(&env, counter);
 
                 let delivery_id = DeliveryId::from(counter);
                 // See create_delivery: overwrite with the real generated ID
