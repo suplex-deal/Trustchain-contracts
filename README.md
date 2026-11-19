@@ -413,3 +413,6 @@ Built with ❤️ by the Trustchain Team | Powered by Stellar Soroban
 
 <!-- handsoff-issue-569 -->
 - #569: Dispute: Restrict Dispute Creation on Already Delivered Deliveries Beyond Allowed Window
+
+<!-- handsoff-issue-75 -->
+- #75: Avoid saturating dispute timestamps and peer timelocks

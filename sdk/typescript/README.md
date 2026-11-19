@@ -74,6 +74,24 @@ const result = await client.createEscrow({
 });
 ```
 
+### Create Escrows in Batch
+
+`createEscrowsBatch` returns the number of escrows created, matching the
+contract's `u32` return value. It does **not** return the created escrow IDs.
+
+```typescript
+const createdCount = await client.createEscrowsBatch({
+  sender: 'GA123...',
+  recipient: 'GB456...',
+  driver: 'GC789...',
+  token: 'CCDE...',
+  amount: BigInt(1_000_000_000),
+  deliveryIds: [BigInt(1), BigInt(2), BigInt(3)],
+});
+
+console.log(createdCount); // 3 (a number, not bigint IDs)
+```
+
 ### Release Escrow
 
 ```typescript
@@ -198,6 +216,20 @@ Create a new escrow for a delivery.
 - `params.amount`: Escrow amount in token units
 - `params.fleetId`: (Optional) Fleet ID if driver is part of a fleet
 
+##### `createEscrowsBatch(params: CreateEscrowsBatchParams, options?: ContractInvokeOptions): Promise<number>`
+Create multiple escrows in a single invocation. Returns the number of escrows
+created, decoded from the contract's `u32` return value.
+
+**Parameters:**
+- `params.sender`: Address funding the escrows
+- `params.recipient`: Address receiving delivery confirmation
+- `params.driver`: Address of the delivery driver
+- `params.token`: Token contract address
+- `params.amount`: Escrow amount per delivery in token units
+- `params.deliveryIds`: Delivery identifiers to create escrows for
+
+**Returns:** `Promise<number>` — count of escrows created (not escrow IDs).
+
 ##### `releaseEscrow(params: ReleaseEscrowParams, options?: ContractInvokeOptions): Promise<void>`
 Release escrowed funds to the driver after delivery confirmation.
 
@@ -239,86 +271,3 @@ Resolve a dispute by splitting funds between sender and driver.
 Get the current platform fee in basis points.
 
 ##### `getAdmin(): Promise<string>`
-Get the admin address.
-
-##### `getEscrow(deliveryId: bigint): Promise<EscrowRecord>`
-Get an escrow record by delivery ID.
-
-##### `getEscrowsBySender(sender: string): Promise<bigint[]>`
-Get all escrow IDs for a sender.
-
-##### `getEscrowsByRecipient(recipient: string): Promise<bigint[]>`
-Get all escrow IDs for a recipient.
-
-##### `getEscrowsByDriver(driver: string): Promise<bigint[]>`
-Get all escrow IDs for a driver.
-
-##### `getTotalLocked(token: string): Promise<bigint>`
-Get the total amount of the token currently locked by escrows.
-
-##### `getUntrackedBalance(token: string): Promise<bigint>`
-Get the contract's token balance that is not tracked as locked escrow funds.
-
-##### `sweepUntrackedBalance(params: SweepUntrackedBalanceParams): Promise<bigint>`
-Sweep the untracked balance to a recipient (admin only) and return the amount
-transferred.
-
-##### `setVolumeTiers(params: SetVolumeTiersParams): Promise<void>`
-Configure the volume thresholds and fee discounts for senders (admin only).
-
-##### `getVolumeTiers(): Promise<VolumeTier[]>`
-Read the configured volume thresholds and discounts.
-
-##### `getSenderVolume(sender: string): Promise<number>`
-Read a sender's accumulated volume.
-
-### DeliveryClient
-
-#### Methods
-
-##### `init(escrowContractId: string, identityContractId: string, options?: ContractInvokeOptions): Promise<void>`
-Initialize the delivery contract.
-
-**Parameters:**
-- `escrowContractId`: Address of the escrow contract
-- `identityContractId`: Address of the identity contract
-
-##### `createDelivery(params: CreateDeliveryParams, options?: ContractInvokeOptions): Promise<bigint>`
-Create a new delivery.
-
-**Parameters:**
-- `params.sender`: Address creating the delivery
-- `params.recipient`: Address receiving delivery
-- `params.deliveryId`: Unique delivery identifier
-- `params.metadata`: Delivery metadata (location, items, notes, etc.)
-
-Delivery metadata accepts `pickupLocation`, `dropoffLocation`, and an optional
-`cargoDescription` with `weightGrams`, `category`, and `fragile`. The cargo
-category is one of `Documents`, `Electronics`, `Perishables`, `Clothing`, or
-`General`. Optional `createdAt` and `estimatedDelivery` values are Unix
-timestamps in seconds. If omitted, the SDK supplies the current creation time
-and estimates delivery from the legacy `estimatedDistance` value. Reads return
-the complete cargo description and all contract metadata fields.
-
-##### `assignDriver(params: AssignDriverParams, options?: ContractInvokeOptions): Promise<void>`
-Assign a driver to a delivery.
-
-**Parameters:**
-- `params.caller`: Authorized caller
-- `params.deliveryId`: Delivery identifier
-- `params.driver`: Driver address
-
-##### `confirmDelivery(params: ConfirmDeliveryParams, options?: ContractInvokeOptions): Promise<void>`
-Confirm that a delivery has been completed.
-
-**Parameters:**
-- `params.caller`: Recipient address
-- `params.deliveryId`: Delivery identifier
-
-##### `getDelivery(deliveryId: bigint): Promise<DeliveryRecord>`
-Get a delivery record.
-
-##### `getDriverProfile(driver: string): Promise<DeliveryDriverProfile>`
-Get the dri
-
-/* … truncated 1736 chars — edit only what you need near the top … */
