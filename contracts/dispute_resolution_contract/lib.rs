@@ -542,9 +542,9 @@ impl DisputeResolutionContract {
                 activates_at,
             },
         );
-        env.storage()
-            .instance()
-            .set(&DataKey::DeliveryContract, &delivery_contract);
+        // The live pointer is only replaced by `confirm_delivery_contract`
+        // once the timelock has elapsed; writing it here would bypass the
+        // review period entirely.
         env.storage()
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
@@ -606,9 +606,36 @@ impl DisputeResolutionContract {
                 activates_at,
             },
         );
+        // The live pointer is only replaced by `confirm_escrow_contract` once
+        // the timelock has elapsed.
         env.storage()
             .instance()
-            .set(&DataKey::EscrowContract, &escrow_contract);
+            .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+        env.events().publish(
+            (Symbol::new(&env, "escrow_contract_change_proposed"),),
+            (caller, escrow_contract, activates_at),
+        );
+    }
+
+    /// Activate the pending escrow contract once its timelock has elapsed.
+    /// Callable by anyone: the change was already authorized by an admin in
+    /// `set_escrow_contract` and the timelock is the review window.
+    #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
+    pub fn confirm_escrow_contract(env: Env) {
+        let pending: PendingPeerContractChange = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingEscrowContract)
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
+        if env.ledger().timestamp() < pending.activates_at {
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowContract, &pending.address);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingEscrowContract);
         env.storage()
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);

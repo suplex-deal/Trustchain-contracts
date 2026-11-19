@@ -22,12 +22,53 @@ export interface RemoveAdminParams {
   oldAdmin: string;
 }
 
+export interface SetDisputeDeliveryContractParams {
+  caller: string;
+  deliveryContract: string;
+}
+
+export interface SetDisputeEscrowContractParams {
+  caller: string;
+  escrowContract: string;
+}
+
+/**
+ * A proposed peer-contract replacement awaiting confirmation. Mirrors the
+ * Rust `PendingPeerContractChange` struct returned by
+ * `get_pending_delivery_contract` / `get_pending_escrow_contract`.
+ */
+export interface PendingPeerContractChange {
+  address: string;
+  proposedBy: string;
+  /** Ledger timestamp (seconds) from which the change may be confirmed. */
+  activatesAt: bigint;
+}
+
 export interface SetIdentityReputationContractParams {
   caller: string;
   reputationContract: string;
 }
 
 export interface SetDisputeReputationPenaltyParams {
+  caller: string;
+  penalty: number;
+}
+
+/**
+ * Upper bound (inclusive) the contract accepts for every dispute reputation
+ * adjustment: the primary penalty, the pay-driver reward and the split
+ * penalty. Mirrors `MAX_DISPUTE_REPUTATION_PENALTY`
+ * (`IDENTITY_MAX_REPUTATION / 2`) in `dispute_resolution_contract/lib.rs`, so
+ * a single ruling can never move a driver's score by more than half the scale.
+ */
+export const MAX_DISPUTE_REPUTATION_ADJUSTMENT = 50;
+
+export interface SetDisputeReputationRewardParams {
+  caller: string;
+  reward: number;
+}
+
+export interface SetDisputeSplitPenaltyParams {
   caller: string;
   penalty: number;
 }

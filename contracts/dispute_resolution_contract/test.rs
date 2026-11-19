@@ -2441,6 +2441,67 @@ fn test_peer_setters_publish_events() {
     assert_eq!(topic0, Symbol::new(&env, "escrow_contract_set"));
 }
 
+/// A proposal must not move the live pointer until it is confirmed after
+/// the timelock (Issue #53).
+#[test]
+fn test_peer_proposals_do_not_activate_before_confirmation() {
+    let (env, admin, _, _, _, original_delivery, original_escrow, dispute_client) = setup_test();
+
+    let new_delivery = Address::generate(&env);
+    let new_escrow = Address::generate(&env);
+    dispute_client.set_delivery_contract(&admin, &new_delivery);
+    dispute_client.set_escrow_contract(&admin, &new_escrow);
+
+    assert_eq!(dispute_client.get_delivery_contract(), original_delivery);
+    assert_eq!(dispute_client.get_escrow_contract(), original_escrow);
+    let pending_delivery = dispute_client.get_pending_delivery_contract().unwrap();
+    let pending_escrow = dispute_client.get_pending_escrow_contract().unwrap();
+    assert_eq!(pending_delivery.address, new_delivery);
+    assert_eq!(pending_escrow.address, new_escrow);
+    assert_eq!(pending_escrow.proposed_by, admin);
+    assert_eq!(
+        pending_escrow.activates_at,
+        env.ledger().timestamp() + shared_types::PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS
+    );
+}
+
+/// Confirming one second before the timelock elapses is rejected; confirming
+/// exactly at `activates_at` succeeds and clears the pending slot.
+#[test]
+fn test_confirm_escrow_contract_enforces_timelock_boundary() {
+    let (env, admin, _, _, _, _, original_escrow, dispute_client) = setup_test();
+
+    let new_escrow = Address::generate(&env);
+    dispute_client.set_escrow_contract(&admin, &new_escrow);
+    let activates_at = dispute_client.get_pending_escrow_contract().unwrap().activates_at;
+
+    env.ledger().set_timestamp(activates_at - 1);
+    match dispute_client.try_confirm_escrow_contract() {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::ContractChangeTimelockNotElapsed.into()),
+        _ => panic!("Expected ContractChangeTimelockNotElapsed before activates_at"),
+    }
+    assert_eq!(dispute_client.get_escrow_contract(), original_escrow);
+
+    env.ledger().set_timestamp(activates_at);
+    dispute_client.confirm_escrow_contract();
+    assert_eq!(dispute_client.get_escrow_contract(), new_escrow);
+    assert!(dispute_client.get_pending_escrow_contract().is_none());
+}
+
+#[test]
+fn test_confirm_peer_contracts_without_pending_change_rejected() {
+    let (_, _, _, _, _, _, _, dispute_client) = setup_test();
+
+    match dispute_client.try_confirm_escrow_contract() {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::NoPendingContractChange.into()),
+        _ => panic!("Expected NoPendingContractChange for escrow"),
+    }
+    match dispute_client.try_confirm_delivery_contract() {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::NoPendingContractChange.into()),
+        _ => panic!("Expected NoPendingContractChange for delivery"),
+    }
+}
+
 #[test]
 fn test_peer_pointer_setters_extend_instance_ttl() {
     let (env, admin, _, _, _, _, _, dispute_client) = setup_test();

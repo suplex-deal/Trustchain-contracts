@@ -165,6 +165,50 @@ export class DeliveryClient {
   }
 
   /**
+   * Mark a delivery `Disputed` to mirror an administrator escrow freeze.
+   *
+   * **Peer-only.** The contract accepts this call only when `caller` is the
+   * configured escrow contract (normally invoked contract-to-contract from
+   * the escrow freeze path); any other caller is rejected with
+   * `Unauthorized`. Exposed for integration automation, simulation and
+   * tests. Valid from `Pending`, `Active`, `InTransit` and `Delivered`; a
+   * delivery that is already `Disputed` is left unchanged, and any other
+   * state is rejected with `InvalidState`.
+   */
+  async syncDisputeFromEscrow(
+    params: DeliveryTypes.SyncDisputeFromEscrowParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    assertContractCaller('syncDisputeFromEscrow', params.caller);
+    await this.invoker.call(
+      'sync_dispute_from_escrow',
+      [address(params.caller), address(params.reporter), u64(params.deliveryId)],
+      options
+    );
+  }
+
+  /**
+   * Move a delivery from `Disputed` to `Resolved`.
+   *
+   * **Peer-only.** The contract accepts this call only when `caller` is the
+   * configured dispute resolution contract (invoked when a verdict is
+   * executed); any other caller is rejected with `Unauthorized`. Also
+   * rejected while the escrow is paused, and with `InvalidState` when the
+   * delivery is not `Disputed`.
+   */
+  async resolveDispute(
+    params: DeliveryTypes.ResolveDeliveryDisputeParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    assertContractCaller('resolveDispute', params.caller);
+    await this.invoker.call(
+      'resolve_dispute',
+      [address(params.caller), u64(params.deliveryId)],
+      options
+    );
+  }
+
+  /**
    * Get a delivery record
    */
   async getDelivery(deliveryId: bigint, options?: ContractInvokeOptions): Promise<DeliveryTypes.DeliveryRecord> {
@@ -285,6 +329,19 @@ export class DeliveryClient {
       throw new Error('Identity contract is not configured');
     }
     return this.identityInvoker;
+  }
+}
+
+/**
+ * Peer-only entrypoints authorize a contract address, never an account. Fail
+ * fast with an explicit message instead of submitting a transaction that can
+ * only end in `Unauthorized`.
+ */
+function assertContractCaller(method: string, caller: string): void {
+  if (!/^C[A-Z2-7]{55}$/.test(caller)) {
+    throw new Error(
+      `${method} is a peer-only entrypoint: caller must be a contract address (C...), received ${caller}`
+    );
   }
 }
 

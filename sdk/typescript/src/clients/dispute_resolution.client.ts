@@ -52,6 +52,58 @@ export class DisputeResolutionClient {
     return String(await this.invoker.call('get_escrow_contract', [], options));
   }
 
+  /**
+   * Propose a replacement delivery contract (admin only). The live pointer
+   * returned by `getDeliveryContract` is unchanged until
+   * `confirmDeliveryContract` succeeds after the peer-change timelock.
+   */
+  async setDeliveryContract(
+    params: DisputeResolutionTypes.SetDisputeDeliveryContractParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    await this.invoker.call('set_delivery_contract', [address(params.caller), address(params.deliveryContract)], options);
+  }
+
+  /**
+   * Activate the pending delivery contract. Fails with
+   * `NoPendingContractChange` when nothing is proposed and
+   * `ContractChangeTimelockNotElapsed` before `activatesAt`.
+   */
+  async confirmDeliveryContract(options?: ContractInvokeOptions): Promise<void> {
+    await this.invoker.call('confirm_delivery_contract', [], options);
+  }
+
+  /** The pending delivery-contract proposal, or `null` when none exists. */
+  async getPendingDeliveryContract(options?: ContractInvokeOptions): Promise<DisputeResolutionTypes.PendingPeerContractChange | null> {
+    return decodePendingPeerChange(await this.invoker.call('get_pending_delivery_contract', [], options));
+  }
+
+  /**
+   * Propose a replacement escrow contract (admin only). The live pointer
+   * returned by `getEscrowContract` is unchanged until
+   * `confirmEscrowContract` succeeds after the peer-change timelock.
+   */
+  async setEscrowContract(
+    params: DisputeResolutionTypes.SetDisputeEscrowContractParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    await this.invoker.call('set_escrow_contract', [address(params.caller), address(params.escrowContract)], options);
+  }
+
+  /**
+   * Activate the pending escrow contract. Fails with
+   * `NoPendingContractChange` when nothing is proposed and
+   * `ContractChangeTimelockNotElapsed` before `activatesAt`.
+   */
+  async confirmEscrowContract(options?: ContractInvokeOptions): Promise<void> {
+    await this.invoker.call('confirm_escrow_contract', [], options);
+  }
+
+  /** The pending escrow-contract proposal, or `null` when none exists. */
+  async getPendingEscrowContract(options?: ContractInvokeOptions): Promise<DisputeResolutionTypes.PendingPeerContractChange | null> {
+    return decodePendingPeerChange(await this.invoker.call('get_pending_escrow_contract', [], options));
+  }
+
   async setIdentityReputationContract(
     params: DisputeResolutionTypes.SetIdentityReputationContractParams,
     options?: ContractInvokeOptions
@@ -71,11 +123,48 @@ export class DisputeResolutionClient {
     params: DisputeResolutionTypes.SetDisputeReputationPenaltyParams,
     options?: ContractInvokeOptions
   ): Promise<void> {
+    assertReputationAdjustment('penalty', params.penalty);
     await this.invoker.call('set_dispute_reputation_penalty', [address(params.caller), u32(params.penalty)], options);
   }
 
   async getDisputeReputationPenalty(options?: ContractInvokeOptions): Promise<number> {
     return Number(await this.invoker.call('get_dispute_reputation_penalty', [], options));
+  }
+
+  /**
+   * Set the reputation credit awarded to the driver when a dispute resolves
+   * in their favour (`resolveDisputePayDriver`). Admin only. Values outside
+   * `0..=MAX_DISPUTE_REPUTATION_ADJUSTMENT` are rejected before submission;
+   * the contract enforces the same bound with `InvalidState`.
+   */
+  async setDisputeReputationReward(
+    params: DisputeResolutionTypes.SetDisputeReputationRewardParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    assertReputationAdjustment('reward', params.reward);
+    await this.invoker.call('set_dispute_reputation_reward', [address(params.caller), u32(params.reward)], options);
+  }
+
+  async getDisputeReputationReward(options?: ContractInvokeOptions): Promise<number> {
+    return Number(await this.invoker.call('get_dispute_reputation_reward', [], options));
+  }
+
+  /**
+   * Set the reputation penalty applied to the driver when a dispute is split
+   * (`resolveDisputeSplitFunds`). Admin only. Values outside
+   * `0..=MAX_DISPUTE_REPUTATION_ADJUSTMENT` are rejected before submission;
+   * the contract enforces the same bound with `InvalidState`.
+   */
+  async setDisputeSplitPenalty(
+    params: DisputeResolutionTypes.SetDisputeSplitPenaltyParams,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    assertReputationAdjustment('split penalty', params.penalty);
+    await this.invoker.call('set_dispute_split_penalty', [address(params.caller), u32(params.penalty)], options);
+  }
+
+  async getDisputeSplitPenalty(options?: ContractInvokeOptions): Promise<number> {
+    return Number(await this.invoker.call('get_dispute_split_penalty', [], options));
   }
 
   async getDisputeResolutionLimit(options?: ContractInvokeOptions): Promise<bigint> {
@@ -147,6 +236,46 @@ export class DisputeResolutionClient {
     const offset = page * pageSize;
     const result = await this.invoker.call('get_disputes_page', [u32(offset), u32(pageSize)], options);
     return (result as unknown[]).map((deliveryId) => BigInt(String(deliveryId)));
+  }
+
+  /**
+   * Total number of disputes ever recorded in the append-only dispute index.
+   *
+   * The count is monotonically increasing and is the exact length of the
+   * index that `getDisputesPage` walks, so a caller has read every dispute
+   * once it has fetched `Math.ceil(count / pageSize)` pages. No authorization
+   * is required.
+   */
+  async getDisputeCount(options?: ContractInvokeOptions): Promise<number> {
+    const count = Number(await this.invoker.call('get_dispute_count', [], options));
+    if (!Number.isInteger(count) || count < 0 || count > 0xffffffff) {
+      throw new TypeError(`Invalid u32 dispute count returned by contract: ${count}`);
+    }
+    return count;
+  }
+}
+
+function decodePendingPeerChange(value: unknown): DisputeResolutionTypes.PendingPeerContractChange | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    address: String(record.address),
+    proposedBy: String(record.proposed_by),
+    activatesAt: BigInt(String(record.activates_at)),
+  };
+}
+
+function assertReputationAdjustment(name: string, value: number): void {
+  if (
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > DisputeResolutionTypes.MAX_DISPUTE_REPUTATION_ADJUSTMENT
+  ) {
+    throw new RangeError(
+      `Dispute reputation ${name} must be an integer in 0..=${DisputeResolutionTypes.MAX_DISPUTE_REPUTATION_ADJUSTMENT}, received ${value}`
+    );
   }
 }
 
