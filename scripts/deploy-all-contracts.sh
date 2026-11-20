@@ -6,6 +6,14 @@
 set -e
 
 NETWORK=${1:-testnet}
+case "$NETWORK" in
+    testnet|mainnet|futurenet) ;;
+    *)
+        echo "❌ Unsupported network: '$NETWORK'" >&2
+        echo "   Valid networks: testnet, mainnet, futurenet" >&2
+        exit 1
+        ;;
+esac
 # Name of the Stellar CLI identity every deploy/initialize script signs with.
 # Overridable, but the default must match the identity provisioned by
 # .github/workflows/deploy-testnet.yml and documented in docs/DEPLOYMENT.md.
@@ -100,40 +108,49 @@ deploy_contract() {
     fi
 }
 
-# Initialize JSON output
-echo "{" > "$OUTPUT_FILE"
-echo "  \"network\": \"$NETWORK\"," >> "$OUTPUT_FILE"
-echo "  \"deployed_at\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"," >> "$OUTPUT_FILE"
-echo "  \"contracts\": {" >> "$OUTPUT_FILE"
+# Deploy contracts in order, building the manifest in a temp file first.
+# The real OUTPUT_FILE is only written once every contract has deployed
+# successfully, so a failed/partial run never clobbers a previously good
+# manifest with a half-populated one.
+TMP_OUTPUT_FILE="$(mktemp "${OUTPUT_FILE}.XXXXXX")"
+trap 'rm -f "$TMP_OUTPUT_FILE"' EXIT
 
-# Deploy contracts in order
 CONTRACTS=("escrow_contract" "delivery_contract" "dispute_resolution_contract" "fleet_management_contract" "identity_reputation_contract" "settlement_contract")
 DEPLOYED_IDS=()
 
 for i in "${!CONTRACTS[@]}"; do
     contract="${CONTRACTS[$i]}"
     contract_id=$(deploy_contract "$contract")
-    
+
     if [ $? -ne 0 ]; then
         echo "${RED}❌ Deployment failed for $contract${NC}"
+        echo "${RED}   $OUTPUT_FILE was left untouched.${NC}"
         exit 1
     fi
-    
+
     DEPLOYED_IDS+=("$contract_id")
-    
-    # Add to JSON (with comma except for last)
-    if [ $i -lt $((${#CONTRACTS[@]} - 1)) ]; then
-        echo "    \"$contract\": \"$contract_id\"," >> "$OUTPUT_FILE"
-    else
-        echo "    \"$contract\": \"$contract_id\"" >> "$OUTPUT_FILE"
-    fi
-    
     echo ""
 done
 
-# Close JSON
-echo "  }" >> "$OUTPUT_FILE"
-echo "}" >> "$OUTPUT_FILE"
+# All deploys succeeded: build the manifest in full, then move it into
+# place atomically.
+{
+    echo "{"
+    echo "  \"network\": \"$NETWORK\","
+    echo "  \"deployed_at\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\","
+    echo "  \"contracts\": {"
+    for i in "${!CONTRACTS[@]}"; do
+        if [ $i -lt $((${#CONTRACTS[@]} - 1)) ]; then
+            printf '    "%s": "%s",\n' "${CONTRACTS[$i]}" "${DEPLOYED_IDS[$i]}"
+        else
+            printf '    "%s": "%s"\n' "${CONTRACTS[$i]}" "${DEPLOYED_IDS[$i]}"
+        fi
+    done
+    echo "  }"
+    echo "}"
+} > "$TMP_OUTPUT_FILE"
+mv "$TMP_OUTPUT_FILE" "$OUTPUT_FILE"
+trap - EXIT
 
 echo ""
 echo "${GREEN}=================================="

@@ -7,6 +7,14 @@ set -e
 
 CONTRACT_NAME=$1
 NETWORK=${2:-testnet}
+case "$NETWORK" in
+    testnet|mainnet|futurenet) ;;
+    *)
+        echo "❌ Unsupported network: '$NETWORK'" >&2
+        echo "   Valid networks: testnet, mainnet, futurenet" >&2
+        exit 1
+        ;;
+esac
 # Name of the Stellar CLI identity every deploy/initialize script signs with.
 # Overridable, but the default must match the identity provisioned by
 # .github/workflows/deploy-testnet.yml and documented in docs/DEPLOYMENT.md.

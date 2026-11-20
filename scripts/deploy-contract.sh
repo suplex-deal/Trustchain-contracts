@@ -7,6 +7,14 @@ set -e
 
 CONTRACT_NAME=$1
 NETWORK=${2:-testnet}
+case "$NETWORK" in
+    testnet|mainnet|futurenet) ;;
+    *)
+        echo "❌ Unsupported network: '$NETWORK'" >&2
+        echo "   Valid networks: testnet, mainnet, futurenet" >&2
+        exit 1
+        ;;
+esac
 # Name of the Stellar CLI identity every deploy/initialize script signs with.
 # Overridable, but the default must match the identity provisioned by
 # .github/workflows/deploy-testnet.yml and documented in docs/DEPLOYMENT.md.
@@ -117,8 +125,26 @@ echo "" >&2
 # so deploying contracts one at a time doesn't clobber previously deployed IDs.
 declare -A DEPLOYED_IDS
 if [ -f "$OUTPUT_FILE" ]; then
+    # Scope the lookup to the body of the top-level "contracts" object
+    # (tracking brace depth) rather than grepping the whole file, so a key
+    # elsewhere in the manifest that happens to share a contract's name
+    # can't be picked up by mistake.
+    EXISTING_CONTRACTS_BLOCK=$(awk '
+        /"contracts"[[:space:]]*:[[:space:]]*\{/ { in_block=1 }
+        in_block {
+            for (i = 1; i <= length($0); i++) {
+                ch = substr($0, i, 1)
+                if (ch == "{") { depth++; if (depth == 1) next }
+                if (ch == "}") {
+                    depth--
+                    if (depth == 0) { in_block = 0; exit }
+                }
+            }
+            if (in_block) print
+        }
+    ' "$OUTPUT_FILE")
     for c in "${CONTRACTS[@]}"; do
-        existing_id=$(grep -o "\"$c\": *\"[^\"]*\"" "$OUTPUT_FILE" | grep -o '"[^"]*"$' | tr -d '"')
+        existing_id=$(echo "$EXISTING_CONTRACTS_BLOCK" | grep -o "\"$c\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | grep -o '"[^"]*"$' | tr -d '"')
         if [ -n "$existing_id" ]; then
             DEPLOYED_IDS["$c"]="$existing_id"
         fi

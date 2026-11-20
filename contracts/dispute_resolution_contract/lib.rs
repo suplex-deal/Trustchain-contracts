@@ -608,7 +608,28 @@ impl DisputeResolutionContract {
         );
         env.storage()
             .instance()
-            .set(&DataKey::EscrowContract, &escrow_contract);
+            .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+        env.events().publish(
+            (Symbol::new(&env, "escrow_contract_change_proposed"),),
+            (caller, escrow_contract, activates_at),
+        );
+    }
+
+    pub fn confirm_escrow_contract(env: Env) {
+        let pending: PendingPeerContractChange = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingEscrowContract)
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
+        if env.ledger().timestamp() < pending.activates_at {
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowContract, &pending.address);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingEscrowContract);
         env.storage()
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
