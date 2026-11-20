@@ -139,6 +139,20 @@ export class DeliveryClient {
   }
 
   /**
+   * Reclaim a delivery whose underlying escrow has expired. Invokes the
+   * escrow contract's `reclaim_expired_escrow` and, on success, transitions
+   * the local delivery record to Cancelled. Callable by anyone once the
+   * escrow is eligible for reclaim (no caller authorization is required by
+   * the contract).
+   */
+  async reclaimDeliveryExpiredEscrow(
+    deliveryId: bigint,
+    options?: ContractInvokeOptions
+  ): Promise<void> {
+    await this.invoker.call('reclaim_delivery_expired_escrow', [u64(deliveryId)], options);
+  }
+
+  /**
    * Mark a delivery as in transit
    */
   async markInTransit(

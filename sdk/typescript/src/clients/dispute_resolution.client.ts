@@ -104,7 +104,8 @@ export class DisputeResolutionClient {
     params: DisputeResolutionTypes.AddEvidenceHashParams,
     options?: ContractInvokeOptions
   ): Promise<void> {
-    await this.invoker.call('add_evidence_hash', [address(params.caller), u64(params.deliveryId), bytes(new Uint8Array(Buffer.from(params.evidenceHash, 'hex')))], options);
+    const evidenceHashBytes = decodeEvidenceHashHex(params.evidenceHash);
+    await this.invoker.call('add_evidence_hash', [address(params.caller), u64(params.deliveryId), bytes(evidenceHashBytes)], options);
   }
 
   async resolveDisputeRefundSender(
@@ -158,6 +159,28 @@ export class DisputeResolutionClient {
  * passed through unchanged so the decoder tolerates RPCs that surface the
  * hash as text.
  */
+/**
+ * Validate and decode a hex-encoded evidence hash into the exact 32-byte
+ * buffer the on-chain `BytesN<32>` parameter requires. Without this check,
+ * a malformed or wrong-length `evidenceHash` string would be silently
+ * truncated/padded by `Buffer.from(..., 'hex')` and encoded into Soroban
+ * XDR as a corrupt or mis-sized evidence hash rather than failing fast.
+ */
+function decodeEvidenceHashHex(evidenceHash: string): Uint8Array {
+  if (typeof evidenceHash !== 'string' || evidenceHash.length === 0) {
+    throw new TypeError('evidenceHash must be a non-empty hex string');
+  }
+  const normalized = evidenceHash.startsWith('0x') || evidenceHash.startsWith('0X')
+    ? evidenceHash.slice(2)
+    : evidenceHash;
+  if (normalized.length !== 64 || !/^[0-9a-fA-F]+$/.test(normalized)) {
+    throw new TypeError(
+      `evidenceHash must be exactly 32 bytes (64 hex characters) to match the contract's BytesN<32>, received ${normalized.length} hex characters`
+    );
+  }
+  return new Uint8Array(Buffer.from(normalized, 'hex'));
+}
+
 function hexEncode(value: unknown): string {
   if (typeof value === 'string') {
     return value;
