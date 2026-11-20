@@ -19,6 +19,18 @@ describe('Soroban contract error formatting', () => {
     );
   });
 
+  test('includes the settlement swap-binding error names', () => {
+    expect(formatSorobanError('Soroban simulation failed', 'Error(Contract, #8)')).toContain(
+      'SettlementError.PreferenceMismatch'
+    );
+    expect(formatSorobanError('Soroban simulation failed', 'Error(Contract, #9)')).toContain(
+      'SettlementError.InvalidSwapRecipient'
+    );
+    expect(formatSorobanError('Soroban simulation failed', 'Error(Contract, #10)')).toContain(
+      'SettlementError.SwapAlreadySettled'
+    );
+  });
+
   test('does not alter errors without a documented contract code', () => {
     expect(formatSorobanError('Soroban simulation failed', 'network unavailable')).toBe(
       'Soroban simulation failed: network unavailable'

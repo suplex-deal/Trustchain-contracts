@@ -750,7 +750,7 @@ fn test_high_value_dispute_requires_two_distinct_mediators() {
         Address::generate(&env),
         shared_types::EscrowStatus::Paused,
     );
-    escrow_record.amount = HIGH_VALUE_DISPUTE_THRESHOLD;
+    escrow_record.amount = shared_types::HIGH_VALUE_DISPUTE_THRESHOLD;
     set_mock_escrow(&env, &escrow_id, 40, &escrow_record);
     dispute_client.raise_dispute(&sender, &did(40));
 

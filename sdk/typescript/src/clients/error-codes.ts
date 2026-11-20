@@ -40,13 +40,15 @@ const ERROR_NAMES: Record<number, string[]> = {
     'TrustchainError.DuplicateDelivery',
     'EscrowError.NoPendingSettlementChange',
     'FleetError.NoPendingTreasuryChange',
+    'SettlementError.PreferenceMismatch',
   ],
   9: [
     'TrustchainError.ProviderNotFound',
     'EscrowError.TimelockNotElapsed',
     'FleetError.TimelockNotElapsed',
+    'SettlementError.InvalidSwapRecipient',
   ],
-  10: ['EscrowError.InvalidDriver', 'FleetError.FleetInactive'],
+  10: ['EscrowError.InvalidDriver', 'FleetError.FleetInactive', 'SettlementError.SwapAlreadySettled'],
   11: [
     'TrustchainError.ProtocolPaused',
     'EscrowError.InvalidParties',

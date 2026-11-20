@@ -325,9 +325,9 @@ impl DeliveryContract {
             .storage()
             .instance()
             .get(&DataKey::PendingEscrowContract)
-            .unwrap_or_else(|| panic_with_error!(&env, DeliveryError::NoPendingContractChange));
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
         if env.ledger().timestamp() < pending.activates_at {
-            panic_with_error!(&env, DeliveryError::ContractChangeTimelockNotElapsed);
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
         }
         env.storage()
             .instance()

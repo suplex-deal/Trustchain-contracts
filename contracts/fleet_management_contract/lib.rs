@@ -613,6 +613,28 @@ impl FleetManagementContract {
         );
     }
 
+    /// Accept an admin-proposed fleet owner reassignment. Only the exact
+    /// proposed address can accept, and the address must authorize this call.
+    #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
+    pub fn accept_fleet_owner_reassignment(env: Env, new_owner: Address, fleet_id: u64) {
+        new_owner.require_auth();
+        let pending_key = DataKey::PendingFleetOwnerReassignment(fleet_id);
+        let pending: PendingFleetOwnerReassignment = env
+            .storage()
+            .persistent()
+            .get(&pending_key)
+            .unwrap_or_else(|| panic_with_error!(&env, FleetError::NoPendingOwnerReassignment));
+        if pending.new_owner != new_owner {
+            panic_with_error!(&env, TrustchainError::Unauthorized);
+        }
+
+        let fleet_key = DataKey::Fleet(fleet_id);
+        let mut profile: FleetProfile = env
+            .storage()
+            .persistent()
+            .get(&fleet_key)
+            .unwrap_or_else(|| panic_with_error!(&env, FleetError::FleetNotFound));
+
         if new_owner == profile.treasury {
             panic_with_error!(&env, FleetError::InvalidConfiguration);
         }
@@ -651,7 +673,7 @@ impl FleetManagementContract {
         );
     }
 
-    pub fn get_pending_fleet_owner_reassignment(
+    pub fn get_pending_owner_reassignment(
         env: Env,
         fleet_id: u64,
     ) -> Option<PendingFleetOwnerReassignment> {

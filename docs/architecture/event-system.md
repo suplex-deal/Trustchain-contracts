@@ -87,6 +87,7 @@ All topic helpers live in `shared_types::events`. Each helper wraps `Symbol::new
 | `admin_proposal_cancelled` | `"admin_proposal_cancelled"` | `escrow_contract` |
 | `protocol_pause_status_changed` | `"protocol_pause_status_changed"` | `escrow_contract` |
 | `delivery_contract_initialized` | `"delivery_contract_initialized"` | `delivery_contract` |
+| `settlement_swap_executed` | `"settlement_swap_executed"` | `settlement_contract` |
 
 The live contracts currently still emit a set of inline topics in addition to the shared helper set. These include admin roster events, holdback/freeze events, treasury and signer configuration events, and sweep/volume updates.
 

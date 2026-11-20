@@ -2,9 +2,11 @@
 
 use shared_types::{
     escrow_key, events, is_admin, ttl, DeliveryRecord, DeliveryStatus, EscrowRecord, EscrowStatus,
-    TrustchainError, PendingPeerContractChange, ProtocolConfig, StorageKey,
+    TrustchainError, PendingPeerContractChange, ProtocolConfig, SettlementFallbackReason,
+    SettlementSwapFallbackEvent, StorageKey,
 };
 use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
     IntoVal, Symbol,
 };
@@ -70,7 +72,7 @@ fn require_dispute_resolution_caller(env: &Env, caller: &Address, amount: i128) 
 
     caller.require_auth();
     require_admin(env, caller);
-    if amount >= HIGH_VALUE_DISPUTE_THRESHOLD {
+    if amount >= shared_types::HIGH_VALUE_DISPUTE_THRESHOLD {
         panic_with_error!(env, TrustchainError::Unauthorized);
     }
 }
@@ -347,9 +349,36 @@ fn require_delivery_lifecycle_caller(env: &Env, caller: &Address, record: &Escro
     }
 }
 
+#[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional
+#[allow(clippy::too_many_arguments)]
+fn emit_swap_fallback(
+    env: &Env,
+    delivery_id: u64,
+    driver: &Address,
+    payout_address: &Address,
+    token: &Address,
+    preferred_asset: Option<Address>,
+    amount: i128,
+    reason: SettlementFallbackReason,
+) {
+    env.events().publish(
+        (events::settlement_swap_fallback(env),),
+        SettlementSwapFallbackEvent {
+            delivery_id,
+            driver: driver.clone(),
+            payout_address: payout_address.clone(),
+            token: token.clone(),
+            preferred_asset,
+            amount,
+            reason,
+        },
+    );
+}
+
 #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
 fn payout_driver(
     env: &Env,
+    delivery_id: u64,
     token: &Address,
     driver: &Address,
     amount: i128,
@@ -385,12 +414,35 @@ fn payout_driver(
         }
     }
 
+    // Preferred-asset payout (Issue: settlement fallback). Both settlement
+    // calls use `try_invoke_contract`, so a settlement/router outage, an
+    // expired approval, slippage, or a rejected binding check can never block
+    // the escrow release. On failure the sub-call is rolled back atomically
+    // (settlement pulls the funds inside its own frame), the escrow still
+    // holds `amount`, and we fall through to the direct transfer below,
+    // emitting `settlement_swap_fallback` so the outcome is unambiguous.
     if let Some(settlement_addr) = get_settlement_contract(env) {
-        let preferred_asset: Option<Address> = env.invoke_contract(
-            &settlement_addr,
-            &Symbol::new(env, "get_driver_preference"),
-            soroban_sdk::vec![env, driver.into_val(env)],
-        );
+        let preferred_asset: Option<Address> = match env
+            .try_invoke_contract::<Option<Address>, soroban_sdk::Error>(
+                &settlement_addr,
+                &Symbol::new(env, "get_driver_preference"),
+                soroban_sdk::vec![env, driver.into_val(env)],
+            ) {
+            Ok(Ok(preference)) => preference,
+            _ => {
+                emit_swap_fallback(
+                    env,
+                    delivery_id,
+                    driver,
+                    &payout_address,
+                    token,
+                    None,
+                    amount,
+                    SettlementFallbackReason::PreferenceLookupFailed,
+                );
+                None
+            }
+        };
 
         if let Some(preferred_asset) = preferred_asset {
             if preferred_asset != token.clone() {
@@ -401,17 +453,32 @@ fn payout_driver(
                     .ledger()
                     .timestamp()
                     .saturating_add(shared_types::SETTLEMENT_SWAP_DEADLINE_WINDOW_SECONDS);
-                token::Client::new(env, token).transfer(
-                    &env.current_contract_address(),
-                    &settlement_addr,
-                    &amount,
-                );
-                let _: () = env.invoke_contract(
+                // Authorize settlement to pull exactly `amount` of `token`
+                // from this contract during the swap — nothing more.
+                env.authorize_as_current_contract(soroban_sdk::vec![
+                    env,
+                    InvokerContractAuthEntry::Contract(SubContractInvocation {
+                        context: ContractContext {
+                            contract: token.clone(),
+                            fn_name: Symbol::new(env, "transfer"),
+                            args: soroban_sdk::vec![
+                                env,
+                                env.current_contract_address().into_val(env),
+                                settlement_addr.into_val(env),
+                                amount.into_val(env),
+                            ],
+                        },
+                        sub_invocations: soroban_sdk::vec![env],
+                    }),
+                ]);
+                let swap_result = env.try_invoke_contract::<i128, soroban_sdk::Error>(
                     &settlement_addr,
                     &Symbol::new(env, "execute_settlement_swap"),
                     soroban_sdk::vec![
                         env,
                         env.current_contract_address().into_val(env),
+                        delivery_id.into_val(env),
+                        driver.into_val(env),
                         token.into_val(env),
                         preferred_asset.into_val(env),
                         payout_address.into_val(env),
@@ -420,7 +487,19 @@ fn payout_driver(
                         deadline.into_val(env),
                     ],
                 );
-                return;
+                if let Ok(Ok(_amount_out)) = swap_result {
+                    return;
+                }
+                emit_swap_fallback(
+                    env,
+                    delivery_id,
+                    driver,
+                    &payout_address,
+                    token,
+                    Some(preferred_asset),
+                    amount,
+                    SettlementFallbackReason::SwapFailed,
+                );
             }
         }
     }
@@ -447,6 +526,7 @@ fn settle_escrow_funds(
 ) {
     payout_driver(
         env,
+        delivery_id,
         &record.token,
         &record.driver,
         driver_amount,
@@ -1026,9 +1106,9 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::PendingDeliveryContract)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NoPendingContractChange));
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
         if env.ledger().timestamp() < pending.activates_at {
-            panic_with_error!(&env, EscrowError::ContractChangeTimelockNotElapsed);
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
         }
         env.storage()
             .instance()
@@ -1993,6 +2073,7 @@ impl EscrowContract {
             let fleet_management = get_fleet_management_contract(&env);
             payout_driver(
                 &env,
+                delivery_id,
                 &record.token,
                 &record.driver,
                 net_driver_amount,
@@ -2093,7 +2174,7 @@ impl EscrowContract {
         if new_window_seconds < constants::MIN_HOLDBACK_WINDOW_SECONDS
             || new_window_seconds > constants::MAX_HOLDBACK_WINDOW_SECONDS
         {
-            panic_with_error!(&env, EscrowError::InvalidState);
+            panic_with_error!(&env, TrustchainError::InvalidState);
         }
         env.storage()
             .instance()
