@@ -1,7 +1,7 @@
 #![no_std]
 
 use shared_types::{
-    DriverPreferenceUpdatedEvent, EscrowContractUpdatedEvent, TrustchainError,
+    is_admin, DriverPreferenceUpdatedEvent, EscrowContractUpdatedEvent, TrustchainError,
     PendingPeerContractChange, StorageKey,
 };
 
@@ -16,6 +16,7 @@ use soroban_sdk::{
 pub enum DataKey {
     EscrowContract,
     PendingEscrowContract,
+    SwapRouter,
     /// Per-driver preferred payout asset recorded via
     /// `set_driver_preference` (Issue #459).
     DriverPreference(Address),

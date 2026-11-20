@@ -179,7 +179,7 @@ fn test_admin_reassign_fleet_owner_resets_signers() {
     assert_eq!(client.get_fleet(&fleet_id).owner, owner);
     assert_eq!(
         client
-            .get_pending_fleet_owner_reassignment(&fleet_id)
+            .get_pending_owner_reassignment(&fleet_id)
             .unwrap()
             .new_owner,
         new_owner
@@ -187,7 +187,7 @@ fn test_admin_reassign_fleet_owner_resets_signers() {
     let attacker = Address::generate(&env);
     let wrong_acceptor = client.try_accept_fleet_owner_reassignment(&attacker, &fleet_id);
     match wrong_acceptor {
-        Err(Ok(err)) => assert_eq!(err, FleetError::Unauthorized.into()),
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::Unauthorized.into()),
         _ => panic!("Expected only the proposed owner to accept reassignment"),
     }
     assert_eq!(client.get_fleet(&fleet_id).owner, owner);
@@ -215,7 +215,7 @@ fn test_admin_reassign_fleet_owner_requires_admin() {
     }
 
     assert_eq!(client.get_fleet(&fleet_id).owner, owner);
-    assert_eq!(client.get_pending_fleet_owner_reassignment(&fleet_id), None);
+    assert_eq!(client.get_pending_owner_reassignment(&fleet_id), None);
 }
 
 #[test]

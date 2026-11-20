@@ -274,7 +274,7 @@ fn test_execute_settlement_swap_requires_initialization() {
     let recipient = Address::generate(&env);
 
     let result =
-        client.try_execute_settlement_swap(&caller, &token, &token, &recipient, &100i128, &90i128);
+        client.try_execute_settlement_swap(&caller, &token, &token, &recipient, &100i128, &90i128, &env.ledger().timestamp());
     match result {
         Err(Ok(err)) => assert_eq!(err, TrustchainError::NotInitialized.into()),
         _ => panic!("Expected NotInitialized from un-initialized execute_settlement_swap"),
@@ -304,35 +304,10 @@ fn test_execute_settlement_swap_rejects_non_escrow_caller() {
     let recipient = Address::generate(&env);
 
     let result = client
-        .try_execute_settlement_swap(&intruder, &token, &token, &recipient, &100i128, &90i128);
+        .try_execute_settlement_swap(&intruder, &token, &token, &recipient, &100i128, &90i128, &env.ledger().timestamp());
     match result {
         Err(Ok(err)) => assert_eq!(err, TrustchainError::Unauthorized.into()),
         _ => panic!("Expected Unauthorized for a non-escrow caller"),
-    }
-}
-
-/// The Phase 3 guard: even the authorized escrow caller hits the
-/// SwapNotImplemented panic — this stub must never silently no-op on mainnet
-/// with unimplemented settlement logic.
-#[test]
-fn test_execute_settlement_swap_panics_before_phase_3() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, SettlementContract);
-    let client = SettlementContractClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let escrow = Address::generate(&env);
-    client.init(&admin, &escrow);
-
-    let token = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    let result =
-        client.try_execute_settlement_swap(&escrow, &token, &token, &recipient, &100i128, &90i128);
-    match result {
-        Err(Ok(err)) => assert_eq!(err, SettlementError::SwapNotImplemented.into()),
-        _ => panic!("Expected SwapNotImplemented production guard"),
     }
 }
 

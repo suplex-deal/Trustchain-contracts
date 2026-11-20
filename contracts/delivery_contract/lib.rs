@@ -126,6 +126,10 @@ pub enum DeliveryError {
     /// (currently: the `Active -> InTransit` transition). See Issue #298.
     EscrowNotLocked = 6,
     InvalidIndexKind = 7,
+    /// `confirm_escrow_contract` was called with no proposal pending.
+    NoPendingContractChange = 8,
+    /// `confirm_escrow_contract` was called before the review window elapsed.
+    ContractChangeTimelockNotElapsed = 9,
 }
 
 mod constants {

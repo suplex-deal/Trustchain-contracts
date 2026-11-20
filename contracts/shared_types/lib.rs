@@ -33,6 +33,21 @@ pub enum TrustchainError {
     LimitExceeded = 12,
     /// A requested timelocked operation was attempted before its delay elapsed.
     TimelockNotElapsed = 13,
+    /// No peer-contract address change is waiting for confirmation.
+    NoPendingContractChange = 14,
+    /// A peer-contract address change is still within its review period.
+    ContractChangeTimelockNotElapsed = 15,
+}
+
+/// Review window applied to changes of cross-contract dependencies.
+pub const PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS: u64 = 3 * 24 * 60 * 60;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingPeerContractChange {
+    pub address: Address,
+    pub proposed_by: Address,
+    pub activates_at: u64,
 }
 
 // Event topic constants for on-chain event tracking
@@ -263,7 +278,7 @@ pub mod events {
     }
 
     pub fn identity_reputation_contract_updated(env: &Env) -> Symbol {
-        Symbol::new(env, "identity_reputation_contract_updated")
+        Symbol::new(env, "identity_contract_updated")
     }
 
     pub fn dispute_contract_updated(env: &Env) -> Symbol {
@@ -294,7 +309,7 @@ pub mod events {
 
     pub fn settlement_contract_proposed(env: &Env) -> Symbol {
         // Soroban Symbol values are capped at 32 bytes; the fuller
-        // "settlement_contract_change_proposed" (35 bytes) exceeds that.
+        // "settlement_contract_proposed" (35 bytes) exceeds that.
         Symbol::new(env, SETTLEMENT_CONTRACT_PROPOSED)
     }
 
