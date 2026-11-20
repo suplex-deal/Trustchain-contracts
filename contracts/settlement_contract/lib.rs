@@ -19,6 +19,7 @@ pub enum DataKey {
     /// Per-driver preferred payout asset recorded via
     /// `set_driver_preference` (Issue #459).
     DriverPreference(Address),
+    SwapRouter,
 }
 
 #[contracterror]
@@ -150,7 +151,7 @@ impl SettlementContract {
     /// argument and return-value contract used by `execute_settlement_swap`.
     pub fn set_swap_router(env: Env, admin: Address, router: Address) {
         admin.require_auth();
-        if !is_admin(&env, &admin) {
+        if !shared_types::is_admin(&env, &admin) {
             panic_with_error!(&env, TrustchainError::Unauthorized);
         }
         env.storage().instance().set(&DataKey::SwapRouter, &router);

@@ -70,7 +70,7 @@ fn require_dispute_resolution_caller(env: &Env, caller: &Address, amount: i128) 
 
     caller.require_auth();
     require_admin(env, caller);
-    if amount >= HIGH_VALUE_DISPUTE_THRESHOLD {
+    if amount >= shared_types::HIGH_VALUE_DISPUTE_THRESHOLD {
         panic_with_error!(env, TrustchainError::Unauthorized);
     }
 }
@@ -632,6 +632,9 @@ pub enum EscrowError {
     /// A batch operation (`create_escrows_batch`) exceeded `MAX_BATCH_SIZE`.
     BatchTooLarge = 12,
     InvalidSlippageTolerance = 13,
+    NoPendingContractChange = 14,
+    ContractChangeTimelockNotElapsed = 15,
+    InvalidState = 16,
 }
 
 #[contracttype]

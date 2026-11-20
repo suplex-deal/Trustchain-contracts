@@ -33,6 +33,8 @@ pub enum TrustchainError {
     LimitExceeded = 12,
     /// A requested timelocked operation was attempted before its delay elapsed.
     TimelockNotElapsed = 13,
+    NoPendingContractChange = 14,
+    ContractChangeTimelockNotElapsed = 15,
 }
 
 // Event topic constants for on-chain event tracking
@@ -341,6 +343,16 @@ pub mod ttl {
 }
 
 pub const SETTLEMENT_SWAP_DEADLINE_WINDOW_SECONDS: u64 = 300;
+
+pub const PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS: u64 = 3 * 24 * 60 * 60;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingPeerContractChange {
+    pub address: Address,
+    pub proposed_by: Address,
+    pub activates_at: u64,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

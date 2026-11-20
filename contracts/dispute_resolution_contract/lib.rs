@@ -230,7 +230,7 @@ impl DisputeResolutionContract {
         escrow_amount: i128,
         verdict: ResolutionVerdict,
     ) -> bool {
-        if escrow_amount < HIGH_VALUE_DISPUTE_THRESHOLD {
+        if escrow_amount < shared_types::HIGH_VALUE_DISPUTE_THRESHOLD {
             return true;
         }
 
@@ -576,7 +576,7 @@ impl DisputeResolutionContract {
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
         env.events().publish(
             (Symbol::new(&env, "delivery_contract_set"),),
-            (pending.proposed_by, pending.address),
+            (caller, escrow_contract),
         );
     }
 
