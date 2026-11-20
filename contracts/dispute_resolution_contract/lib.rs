@@ -613,8 +613,8 @@ impl DisputeResolutionContract {
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
         env.events().publish(
-            (Symbol::new(&env, "escrow_contract_set"),),
-            (pending.proposed_by, pending.address),
+            (Symbol::new(&env, "escrow_contract_change_proposed"),),
+            (caller, escrow_contract, activates_at),
         );
     }
 

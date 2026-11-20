@@ -43,8 +43,8 @@ Soroban contracts are upgradeable by design. This guide covers safe upgrade proc
 ```bash
 # Update version in Cargo.toml
 # Build optimized WASM
-cargo build --target wasm32-unknown-unknown --release
-wasm-opt -Oz target/wasm32-unknown-unknown/release/contract.wasm -o contract_v2.wasm
+cargo build --target wasm32v1-none --release
+wasm-opt -Oz target/wasm32v1-none/release/contract.wasm -o contract_v2.wasm
 ```
 
 ### Step 2: Deploy to Testnet

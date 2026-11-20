@@ -7393,3 +7393,83 @@ fn test_admin_freeze_funds_is_idempotent() {
 
     assert_eq!(client.get_escrow(&10405u64).status, EscrowStatus::Paused);
 }
+
+/// Issue #102: a full, real cross-contract escrow lifecycle, driven entirely
+/// through the public entry points exactly as a production client would call
+/// them (no shortcuts replicating internal transitions, unlike the
+/// `Holdback`-replication helper tests above). This wires delivery_contract,
+/// escrow_contract and identity_reputation_contract together via
+/// `setup_wired_protocol` and walks: create delivery -> fund escrow -> assign
+/// driver -> mark in transit -> recipient confirms delivery (which
+/// cross-calls `mark_holdback_escrow`) -> recipient releases the holdback.
+/// Asserts the escrow, delivery and reputation state all land correctly and
+/// that the driver is paid net of the platform fee while the sender's funds
+/// leave escrow entirely.
+#[test]
+fn test_integration_full_escrow_lifecycle_create_to_release() {
+    let (
+        env,
+        delivery_id,
+        delivery_addr,
+        escrow_addr,
+        _dispute_addr,
+        identity_addr,
+        token,
+        _admin,
+        sender,
+        recipient,
+        driver,
+    ) = setup_wired_protocol(1000);
+
+    let escrow_client = EscrowContractClient::new(&env, &escrow_addr);
+    let delivery_client = delivery_contract::DeliveryContractClient::new(&env, &delivery_addr);
+    let identity_client =
+        identity_reputation_contract::IdentityReputationContractClient::new(&env, &identity_addr);
+
+    // Sender funded the escrow via create_escrow inside setup_wired_protocol;
+    // all 1000 units left the sender's wallet into the contract.
+    assert_eq!(balance(&env, &token, &sender), 0);
+    assert_eq!(
+        escrow_client.get_escrow(&u64::from(delivery_id)).status,
+        EscrowStatus::Locked
+    );
+
+    // Driver commits to transit.
+    delivery_client.mark_in_transit(&driver, &delivery_id);
+    assert_eq!(
+        delivery_client.get_delivery(&delivery_id).status,
+        delivery_contract::DeliveryStatus::InTransit
+    );
+
+    // Recipient confirms delivery through the real delivery_contract entry
+    // point, which cross-calls escrow_contract::mark_holdback_escrow and
+    // credits the driver's reputation.
+    delivery_client.confirm_delivery(&recipient, &delivery_id);
+    assert_eq!(
+        delivery_client.get_delivery(&delivery_id).status,
+        delivery_contract::DeliveryStatus::Delivered
+    );
+    assert_eq!(
+        escrow_client.get_escrow(&u64::from(delivery_id)).status,
+        EscrowStatus::Holdback
+    );
+    assert!(
+        identity_client.get_driver_profile(&driver).reputation_score > 50,
+        "confirming delivery must credit the driver's reputation"
+    );
+
+    // Recipient releases the holdback, paying the driver net of the (zero,
+    // in this setup) platform fee and fully draining the escrow.
+    escrow_client.release_holdback_escrow(&recipient, &u64::from(delivery_id));
+    assert_eq!(
+        escrow_client.get_escrow(&u64::from(delivery_id)).status,
+        EscrowStatus::Released
+    );
+    assert_eq!(balance(&env, &token, &driver), 1000);
+    assert_eq!(balance(&env, &token, &sender), 0);
+    assert_eq!(
+        balance(&env, &token, &escrow_addr),
+        0,
+        "escrow contract must hold no residual funds once released"
+    );
+}

@@ -2713,3 +2713,54 @@ fn test_split_funds_rejects_sender_share_endpoints() {
         DisputeStatus::Split
     );
 }
+
+/// Issue #103 adversarial test: an admin attempts to render a verdict on a
+/// `delivery_id` for which no dispute has ever been raised against either
+/// contract. The dispute case does not exist in persistent storage, so this
+/// must fail closed with `DeliveryNotFound` rather than silently creating a
+/// verdict out of thin air or crossing into escrow's state for an unrelated
+/// delivery.
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #4)")] // TrustchainError::DeliveryNotFound
+fn test_adversarial_verdict_on_nonexistent_dispute() {
+    let (_env, admin, _sender, _recipient, _driver, _delivery_id, _escrow_id, dispute_client) =
+        setup_test();
+
+    // did(999) was never raised via raise_dispute, so no DisputeCase exists.
+    dispute_client.resolve_dispute_refund_sender(&admin, &did(999));
+}
+
+/// Issue #103 adversarial test: after an admin has already rendered a
+/// verdict (refund-sender) for a dispute, a second, conflicting verdict
+/// (pay-driver) is attempted against the *same* delivery_id. The dispute is
+/// no longer `Open`, so the double-verdict attempt must be rejected with
+/// `InvalidState` and must not be allowed to flip the already-resolved
+/// outcome or double-pay out of escrow.
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #5)")] // TrustchainError::InvalidState
+fn test_adversarial_double_verdict_conflicting_methods() {
+    let (_env, admin, sender, recipient, driver, delivery_id, escrow_id, dispute_client) =
+        setup_test();
+
+    raise_mock_dispute(
+        &sender,
+        &recipient,
+        &driver,
+        &delivery_id,
+        &escrow_id,
+        &dispute_client,
+        did(1),
+    );
+
+    // First verdict: refund the sender. This resolves the dispute.
+    dispute_client.resolve_dispute_refund_sender(&admin, &did(1));
+    assert_eq!(
+        dispute_client.get_dispute(&did(1)).status,
+        DisputeStatus::ResolvedRefund
+    );
+
+    // Second, conflicting verdict on the same dispute must be rejected
+    // outright rather than overwriting the first resolution in the driver's
+    // favor.
+    dispute_client.resolve_dispute_pay_driver(&admin, &did(1));
+}
