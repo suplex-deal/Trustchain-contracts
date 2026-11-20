@@ -192,8 +192,15 @@ Read-only view that returns the full `EscrowRecord` for a given delivery ID. Use
 On every escrow release, a platform fee is deducted:
 
 ```rust
-platform_fee = amount * platform_fee_bps / 10_000
+platform_fee = floor(amount * platform_fee_bps / 10_000)
 ```
+
+**Rounding policy:** the fee is rounded **down**; any fractional unit goes to
+the driver, never the platform. The effective rate never exceeds the
+configured rate, and `fee + driver_amount == amount` always holds. For a
+non-zero rate `b`, escrows below `ceil(10_000 / b)` pay no fee (e.g. at 5%,
+amounts 1–19 are fee-free and 20 pays 1). The calculation is exact for all
+`i128` amounts (no saturation on large values).
 
 - The fee is transferred to the admin address
 - The remainder is paid to the driver (or fleet treasury)

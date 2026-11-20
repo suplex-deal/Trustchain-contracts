@@ -49,8 +49,9 @@ export const DeliveryErrorCodes = {
   InvalidDriver: 4,
   InvalidParties: 5,
   EscrowNotLocked: 6,
-  NoPendingContractChange: 7,
-  ContractChangeTimelockNotElapsed: 8,
+  InvalidIndexKind: 7,
+  NoPendingContractChange: 8,
+  ContractChangeTimelockNotElapsed: 9,
 } as const;
 
 export interface CreateDeliveryParams {

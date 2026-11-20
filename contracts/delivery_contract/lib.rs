@@ -126,6 +126,10 @@ pub enum DeliveryError {
     /// (currently: the `Active -> InTransit` transition). See Issue #298.
     EscrowNotLocked = 6,
     InvalidIndexKind = 7,
+    /// No peer-contract address change is waiting for confirmation.
+    NoPendingContractChange = 8,
+    /// A peer-contract address change is still within its review period.
+    ContractChangeTimelockNotElapsed = 9,
 }
 
 mod constants {

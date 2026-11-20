@@ -1528,10 +1528,8 @@ fn test_clear_settlement_contract_emits_audit_event() {
     let (topics, data) = last_event(&env);
     let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
     assert_eq!(topic, Symbol::new(&env, "settlement_contract_cleared"));
-    assert_eq!(
-        data,
-        (admin, env.ledger().timestamp()).into_val(&env)
-    );
+    let decoded: (Address, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(decoded, (admin, env.ledger().timestamp()));
 }
 
 #[test]
@@ -3694,14 +3692,14 @@ fn test_configured_dispute_contract_blocks_direct_admin_resolution() {
     let dispute_contract = Address::generate(&env);
 
     client.init(&admin, &token, &0);
-    mint(&env, &token, &sender, HIGH_VALUE_DISPUTE_THRESHOLD);
+    mint(&env, &token, &sender, shared_types::HIGH_VALUE_DISPUTE_THRESHOLD);
     client.create_escrow(
         &sender,
         &recipient,
         &driver,
         &1940u64,
         &token,
-        &HIGH_VALUE_DISPUTE_THRESHOLD,
+        &shared_types::HIGH_VALUE_DISPUTE_THRESHOLD,
         &None,
     );
     client.set_dispute_resolution_contract(&admin, &dispute_contract);
@@ -5020,11 +5018,9 @@ fn test_clear_fleet_management_contract_emits_audit_event() {
 
     let (topics, data) = last_event(&env);
     let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(topic, Symbol::new(&env, "fleet_management_contract_cleared"));
-    assert_eq!(
-        data,
-        (admin, env.ledger().timestamp()).into_val(&env)
-    );
+    assert_eq!(topic, Symbol::new(&env, "fleet_contract_cleared"));
+    let decoded: (Address, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(decoded, (admin, env.ledger().timestamp()));
 }
 
 #[test]
@@ -5345,8 +5341,8 @@ fn test_escrow_released_event_shape_matches_across_emitters() {
         &None,
     );
     client_b.set_delivery_contract(&admin_b, &delivery_contract_b);
-    env.ledger().set_timestamp(
-        env.ledger().timestamp() + shared_types::PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS,
+    env_b.ledger().set_timestamp(
+        env_b.ledger().timestamp() + shared_types::PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS,
     );
     client_b.confirm_delivery_contract();
     client_b.mark_holdback_escrow(&delivery_contract_b, &801u64);
@@ -6653,7 +6649,7 @@ fn test_set_holdback_window_rejects_above_maximum() {
         &(constants::MAX_HOLDBACK_WINDOW_SECONDS + 1),
     );
     match result {
-        Err(Ok(err)) => assert_eq!(err, EscrowError::InvalidState.into()),
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::InvalidState.into()),
         _ => panic!("Expected EscrowError::InvalidState for an above-maximum window"),
     }
 
@@ -7392,4 +7388,79 @@ fn test_admin_freeze_funds_is_idempotent() {
     client.admin_freeze_funds(&admin, &10405u64);
 
     assert_eq!(client.get_escrow(&10405u64).status, EscrowStatus::Paused);
+}
+
+// ---------------------------------------------------------------------------
+// Fee rounding policy: platform fee is rounded DOWN (see `calculate_fee`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_fee_rounding_thresholds_round_down() {
+    for bps in [1u32, 3, 7, 50, 250, 500, 999, 1000] {
+        let min = min_amount_for_nonzero_fee(bps).unwrap();
+        // Boundary: one unit below the threshold settles fee-free...
+        assert_eq!(calculate_fee(min - 1, bps), 0, "bps={bps}");
+        // ...and the threshold itself pays exactly one unit.
+        assert_eq!(calculate_fee(min, bps), 1, "bps={bps}");
+        // The fee never exceeds the configured rate.
+        for amount in [1i128, min - 1, min, min + 1, 10_000, 123_456_789] {
+            let fee = calculate_fee(amount, bps);
+            assert!(fee * 10_000 <= amount * bps as i128, "bps={bps} amount={amount}");
+            assert!((amount * bps as i128 - fee * 10_000) < 10_000);
+        }
+    }
+    assert_eq!(min_amount_for_nonzero_fee(0), None);
+    assert_eq!(calculate_fee(1, 1000), 0);
+    assert_eq!(calculate_fee(0, 1000), 0);
+    assert_eq!(calculate_fee(-5, 1000), 0);
+}
+
+#[test]
+fn test_fee_exact_for_amounts_that_previously_saturated() {
+    // amount * bps overflows i128; the old saturating formula undercharged.
+    let amount = i128::MAX;
+    let expected = (amount / 10_000) * 1000 + (amount % 10_000) * 1000 / 10_000;
+    assert_eq!(calculate_fee(amount, 1000), expected);
+    assert!(calculate_fee(amount, 1000) > i128::MAX / 11);
+}
+
+#[test]
+fn test_release_low_amount_fee_boundary_end_to_end() {
+    // 5% fee: threshold is ceil(10_000 / 500) = 20.
+    for (id, amount, fee) in [(9001u64, 19i128, 0i128), (9002, 20, 1), (9003, 1, 0)] {
+        let (env, contract_id) = setup_env();
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let driver = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = setup_token(&env, &token_admin);
+        client.init(&admin, &token, &500);
+        mint(&env, &token, &sender, amount);
+        client.create_escrow(&sender, &recipient, &driver, &id, &token, &amount, &None);
+        client.release_escrow(&admin, &id);
+        assert_eq!(balance(&env, &token, &admin), fee);
+        assert_eq!(balance(&env, &token, &driver), amount - fee);
+    }
+}
+
+#[test]
+fn test_zero_amount_escrow_rejected() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = setup_token(&env, &token_admin);
+    client.init(&admin, &token, &500);
+    let res = client.try_create_escrow(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &9010u64,
+        &token,
+        &0,
+        &None,
+    );
+    assert_eq!(res, Err(Ok(EscrowError::InvalidAmount.into())));
 }

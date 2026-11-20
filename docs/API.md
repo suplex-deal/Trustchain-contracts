@@ -340,7 +340,7 @@ leave the delivery contract unconfigured.
 - `Unauthorized` - Caller is not the configured admin
 - `NotInitialized` - Contract has not been initialised
 
-**Events:** `delivery_contract_change_proposed`; confirmation emits
+**Events:** `delivery_contract_proposed`; confirmation emits
 `delivery_contract_updated`.
 
 #### `confirm_delivery_contract`
@@ -2307,7 +2307,7 @@ Propose an emergency reassignment for a compromised fleet-owner key. The reassig
 - Stores the pending new owner without changing the fleet profile.
 - Re-proposing replaces the pending target.
 
-**Events:** `fleet_owner_reassignment_proposed`
+**Events:** `fleet_owner_reassign_proposed`
 
 #### `accept_fleet_owner_reassignment`
 Accept a pending admin-proposed owner reassignment. Only the exact proposed address may accept, and it must authorize the call.
@@ -2648,7 +2648,7 @@ active address changes only after three days and a separate
 **Errors:**
 - `Unauthorized` - Caller is not the stored admin
 
-**Events:** `delivery_contract_change_proposed`; confirmation emits
+**Events:** `delivery_contract_proposed`; confirmation emits
 `delivery_contract_updated` - `(admin, delivery_contract)`
 
 #### `confirm_delivery_contract`

@@ -25,6 +25,8 @@ pub mod constants {
     pub const MAX_BATCH_SIZE: u32 = 100;
     pub const DEFAULT_ESCROW_EXPIRY_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 days
     pub const MAX_PLATFORM_FEE_BPS: u32 = 1000;
+    /// Basis-point denominator: 10_000 bps == 100%.
+    pub const BPS_DENOMINATOR: i128 = 10_000;
     pub const MAX_SLIPPAGE_TOLERANCE_BPS: u32 = 1000;
     pub const SETTLEMENT_CONTRACT_TIMELOCK_SECONDS: u64 = 3 * 24 * 60 * 60; // 3 days
     /// Default time a recipient has, after confirming delivery (i.e. after
@@ -70,7 +72,7 @@ fn require_dispute_resolution_caller(env: &Env, caller: &Address, amount: i128) 
 
     caller.require_auth();
     require_admin(env, caller);
-    if amount >= HIGH_VALUE_DISPUTE_THRESHOLD {
+    if amount >= shared_types::HIGH_VALUE_DISPUTE_THRESHOLD {
         panic_with_error!(env, TrustchainError::Unauthorized);
     }
 }
@@ -170,8 +172,49 @@ fn apply_freeze_funds(env: &Env, actor: &Address, delivery_id: u64) {
     }
 }
 
+/// Compute the platform fee owed on `amount` at `platform_fee_bps`.
+///
+/// # Rounding policy
+///
+/// The fee is `floor(amount * platform_fee_bps / BPS_DENOMINATOR)`: it is
+/// **rounded down**, so any fractional unit goes to the payee (driver or
+/// fleet treasury), never to the platform. Consequences callers can rely on:
+///
+/// - `0 <= fee <= amount` and `fee + (amount - fee) == amount` (conservation).
+/// - The effective rate never exceeds the configured rate.
+/// - For a non-zero rate `b`, the fee is zero for every
+///   `amount < ceil(BPS_DENOMINATOR / b)` (see [`min_amount_for_nonzero_fee`]).
+///   This is intentional: tiny escrows settle fee-free rather than being
+///   charged above the published rate.
+///
+/// The product is split into whole and remainder parts so the result is exact
+/// for every non-negative `i128` amount; the previous
+/// `amount.saturating_mul(bps) / 10_000` silently undercharged once the
+/// multiplication saturated.
 fn calculate_fee(amount: i128, platform_fee_bps: u32) -> i128 {
-    amount.saturating_mul(platform_fee_bps as i128) / 10_000
+    if amount <= 0 || platform_fee_bps == 0 {
+        return 0;
+    }
+    let bps = platform_fee_bps as i128;
+    let whole = amount / constants::BPS_DENOMINATOR;
+    let rem = amount % constants::BPS_DENOMINATOR;
+    // With bps <= 10_000 (all callers), `whole * bps <= amount`, so this
+    // cannot overflow; `saturating_*` keeps it total for out-of-range input.
+    whole
+        .saturating_mul(bps)
+        .saturating_add(rem * bps / constants::BPS_DENOMINATOR)
+}
+
+/// Smallest escrow amount that yields a non-zero fee at `platform_fee_bps`
+/// under the round-down policy of [`calculate_fee`]: `ceil(10_000 / bps)`.
+/// Returns `None` when the rate is zero (no amount ever pays a fee).
+#[allow(dead_code)] // documented helper; exercised by the fee-threshold tests
+fn min_amount_for_nonzero_fee(platform_fee_bps: u32) -> Option<i128> {
+    if platform_fee_bps == 0 {
+        return None;
+    }
+    let bps = platform_fee_bps as i128;
+    Some((constants::BPS_DENOMINATOR + bps - 1) / bps)
 }
 
 /// Validates a volume tier list before it is written to storage.
@@ -632,6 +675,10 @@ pub enum EscrowError {
     /// A batch operation (`create_escrows_batch`) exceeded `MAX_BATCH_SIZE`.
     BatchTooLarge = 12,
     InvalidSlippageTolerance = 13,
+    /// No peer-contract address change is waiting for confirmation.
+    NoPendingContractChange = 14,
+    /// A peer-contract address change is still within its review period.
+    ContractChangeTimelockNotElapsed = 15,
 }
 
 #[contracttype]
@@ -951,7 +998,7 @@ impl EscrowContract {
             .remove(&DataKey::FleetManagementContract);
         extend_instance_ttl(&env);
         env.events().publish(
-            (Symbol::new(&env, "fleet_management_contract_cleared"),),
+            (Symbol::new(&env, "fleet_contract_cleared"),),
             (admin, env.ledger().timestamp()),
         );
     }
@@ -1015,7 +1062,7 @@ impl EscrowContract {
         );
         extend_instance_ttl(&env);
         env.events().publish(
-            (Symbol::new(&env, "delivery_contract_change_proposed"),),
+            (Symbol::new(&env, "delivery_contract_proposed"),),
             (delivery_contract, activates_at),
         );
     }
@@ -2093,7 +2140,7 @@ impl EscrowContract {
         if new_window_seconds < constants::MIN_HOLDBACK_WINDOW_SECONDS
             || new_window_seconds > constants::MAX_HOLDBACK_WINDOW_SECONDS
         {
-            panic_with_error!(&env, EscrowError::InvalidState);
+            panic_with_error!(&env, TrustchainError::InvalidState);
         }
         env.storage()
             .instance()
