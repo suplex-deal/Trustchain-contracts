@@ -56,7 +56,7 @@ export class DeliveryClient {
   async getDeliveriesBySender(
     sender: string,
     options?: PaginationOptions,
-  ): Promise<any[]> {
+  ): Promise<bigint[]> {
     const { offset, limit } = resolvePagination(options);
     const method = hasPagination(options) ? 'get_deliveries_page' : 'get_deliveries_by_sender';
     const args = hasPagination(options)
@@ -73,7 +73,7 @@ export class DeliveryClient {
   async getDeliveriesByRecipient(
     recipient: string,
     options?: PaginationOptions,
-  ): Promise<any[]> {
+  ): Promise<bigint[]> {
     const { offset, limit } = resolvePagination(options);
     const method = hasPagination(options) ? 'get_deliveries_page' : 'get_deliveries_by_recipient';
     const args = hasPagination(options)
@@ -90,7 +90,7 @@ export class DeliveryClient {
   async getDeliveriesByDriver(
     driver: string,
     options?: PaginationOptions,
-  ): Promise<any[]> {
+  ): Promise<bigint[]> {
     const { offset, limit } = resolvePagination(options);
     const method = hasPagination(options) ? "get_deliveries_page" : "get_deliveries_by_driver";
     const args = hasPagination(options)
@@ -105,7 +105,7 @@ export class DeliveryClient {
   }
 
 
-  private async invokeRead(method: string, args: xdr.ScVal[]): Promise<any[]> {
+  private async invokeRead(method: string, args: xdr.ScVal[]): Promise<bigint[]> {
     const source = Keypair.random();
     const account = await this.server.getAccount(source.publicKey());
     const tx = new TransactionBuilder(account, {
@@ -123,7 +123,7 @@ export class DeliveryClient {
     if (!result) {
       return [];
     }
-    return scValToNative(result.retval) as any[];
+    return (scValToNative(result.retval) as unknown[]).map((id) => BigInt(String(id)));
   }
 }
 
@@ -141,7 +141,7 @@ export class EscrowClient {
   async getEscrowsBySender(
     sender: string,
     options?: PaginationOptions,
-  ): Promise<any[]> {
+  ): Promise<bigint[]> {
     const { offset, limit } = resolvePagination(options);
     const method = hasPagination(options) ? 'get_escrows_page' : 'get_escrows_by_sender';
     const args = hasPagination(options)
@@ -157,7 +157,7 @@ export class EscrowClient {
   async getEscrowsByRecipient(
     recipient: string,
     options?: PaginationOptions,
-  ): Promise<any[]> {
+  ): Promise<bigint[]> {
     const { offset, limit } = resolvePagination(options);
     const method = hasPagination(options) ? 'get_escrows_page' : 'get_escrows_by_recipient';
     const args = hasPagination(options)
@@ -173,7 +173,7 @@ export class EscrowClient {
   async getEscrowsByDriver(
     driver: string,
     options?: PaginationOptions,
-  ): Promise<any[]> {
+  ): Promise<bigint[]> {
     const { offset, limit } = resolvePagination(options);
     const method = hasPagination(options) ? 'get_escrows_page' : 'get_escrows_by_driver';
     const args = hasPagination(options)
@@ -186,7 +186,7 @@ export class EscrowClient {
     return this.invokeRead(method, args);
   }
 
-  private async invokeRead(method: string, args: xdr.ScVal[]): Promise<any[]> {
+  private async invokeRead(method: string, args: xdr.ScVal[]): Promise<bigint[]> {
     const source = Keypair.random();
     const account = await this.server.getAccount(source.publicKey());
     const tx = new TransactionBuilder(account, {
@@ -204,6 +204,6 @@ export class EscrowClient {
     if (!result) {
       return [];
     }
-    return scValToNative(result.retval) as any[];
+    return (scValToNative(result.retval) as unknown[]).map((id) => BigInt(String(id)));
   }
 }
