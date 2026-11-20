@@ -95,6 +95,7 @@ Shared failures such as `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, 
 | 5 | `InsufficientSwapBalance` | Settlement does not hold the requested input amount. |
 | 6 | `SwapInputNotConsumed` | Router did not consume the exact approved input amount. |
 | 7 | `InvalidSwapDeadline` | Swap deadline is expired or exceeds the 300-second window. |
+| 8 | `InvalidPreferenceToken` | `set_driver_preference` target is not a deployed token contract. |
 
 ## Contracts with no local error enum
 

@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate std;
+
 use super::*;
 use soroban_sdk::{
     contract, contractimpl,
@@ -36,6 +38,113 @@ impl MockSwapRouter {
     }
 }
 
+/// Router that only pulls half of the approved input, leaving a residual
+/// allowance behind if the settlement contract did not revoke it.
+#[contract]
+struct MockPartialSwapRouter;
+
+#[contractimpl]
+impl MockPartialSwapRouter {
+    pub fn swap_exact_tokens_for_tokens(
+        env: Env,
+        caller: Address,
+        from_token: Address,
+        to_token: Address,
+        recipient: Address,
+        amount: i128,
+        _min_amount_out: i128,
+        _deadline: u64,
+    ) -> i128 {
+        let router = env.current_contract_address();
+        let consumed = amount / 2;
+        token::Client::new(&env, &from_token).transfer_from(&router, &caller, &router, &consumed);
+        let amount_out = amount * 2;
+        token::Client::new(&env, &to_token).transfer(&router, &recipient, &amount_out);
+        amount_out
+    }
+}
+
+struct SwapFixture {
+    env: Env,
+    contract_id: Address,
+    escrow: Address,
+    router: Address,
+    from_token: Address,
+    to_token: Address,
+    recipient: Address,
+}
+
+fn setup_swap(partial_router: bool) -> SwapFixture {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let escrow = Address::generate(&env);
+    let router = if partial_router {
+        env.register_contract(None, MockPartialSwapRouter)
+    } else {
+        env.register_contract(None, MockSwapRouter)
+    };
+    let from_token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    let to_token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    let recipient = Address::generate(&env);
+
+    client.init(&admin, &escrow);
+    client.set_swap_router(&admin, &router);
+    token::StellarAssetClient::new(&env, &from_token).mint(&contract_id, &100);
+    token::StellarAssetClient::new(&env, &to_token).mint(&router, &200);
+
+    SwapFixture {
+        env,
+        contract_id,
+        escrow,
+        router,
+        from_token,
+        to_token,
+        recipient,
+    }
+}
+
+/// Deploy a Stellar Asset Contract so preference tests use a real token.
+fn new_token(env: &Env) -> Address {
+    env.register_stellar_asset_contract_v2(Address::generate(env))
+        .address()
+}
+
+/// Amounts passed to `approve` on `token` during the last invocation, in order.
+fn approve_amounts(env: &Env, token: &Address) -> std::vec::Vec<i128> {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::xdr::{ContractEventBody, ScVal};
+
+    env.events()
+        .all()
+        .filter_by_contract(token)
+        .events()
+        .iter()
+        .filter_map(|event| {
+            let ContractEventBody::V0(body) = &event.body;
+            match body.topics.first() {
+                Some(ScVal::Symbol(sym)) if sym.as_slice() == b"approve" => {}
+                _ => return None,
+            }
+            match &body.data {
+                ScVal::Vec(Some(items)) => match items.first() {
+                    Some(ScVal::I128(parts)) => {
+                        Some(((parts.hi as i128) << 64) | parts.lo as i128)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 #[test]
 fn test_get_driver_preference_returns_none_when_unset() {
     let env = Env::default();
@@ -58,7 +167,7 @@ fn test_set_and_get_driver_preference() {
     let client = SettlementContractClient::new(&env, &contract_id);
 
     let driver = Address::generate(&env);
-    let to_token = Address::generate(&env);
+    let to_token = new_token(&env);
 
     client.set_driver_preference(&driver, &to_token);
 
@@ -79,7 +188,7 @@ fn test_set_driver_preference_extends_instance_ttl() {
     let admin = Address::generate(&env);
     let escrow = Address::generate(&env);
     let driver = Address::generate(&env);
-    let to_token = Address::generate(&env);
+    let to_token = new_token(&env);
 
     client.init(&admin, &escrow);
     env.ledger().with_mut(|ledger| {
@@ -105,8 +214,8 @@ fn test_driver_preference_is_scoped_per_driver() {
 
     let driver_a = Address::generate(&env);
     let driver_b = Address::generate(&env);
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
+    let token_a = new_token(&env);
+    let token_b = new_token(&env);
 
     client.set_driver_preference(&driver_a, &token_a);
     client.set_driver_preference(&driver_b, &token_b);
@@ -124,8 +233,8 @@ fn test_set_driver_preference_overwrites_previous_value() {
     let client = SettlementContractClient::new(&env, &contract_id);
 
     let driver = Address::generate(&env);
-    let first = Address::generate(&env);
-    let second = Address::generate(&env);
+    let first = new_token(&env);
+    let second = new_token(&env);
 
     client.set_driver_preference(&driver, &first);
     client.set_driver_preference(&driver, &second);
@@ -142,7 +251,7 @@ fn test_set_driver_preference_requires_driver_auth() {
     let client = SettlementContractClient::new(&env, &contract_id);
 
     let driver = Address::generate(&env);
-    let to_token = Address::generate(&env);
+    let to_token = new_token(&env);
 
     // No auth is mocked, so the driver's own signature is missing.
     let result = client.try_set_driver_preference(&driver, &to_token);
@@ -258,9 +367,9 @@ fn test_get_admin_before_init_returns_not_initialized() {
     }
 }
 
-// ── execute_settlement_swap production guard ───────────────────────────────
+// ── execute_settlement_swap guards ─────────────────────────────────────────
 
-/// Calling the stub before init fails with NotInitialized rather than
+/// Calling execute_settlement_swap before init fails with NotInitialized rather than
 /// proceeding with no escrow contract configured.
 #[test]
 fn test_execute_settlement_swap_requires_initialization() {
@@ -274,7 +383,7 @@ fn test_execute_settlement_swap_requires_initialization() {
     let recipient = Address::generate(&env);
 
     let result =
-        client.try_execute_settlement_swap(&caller, &token, &token, &recipient, &100i128, &90i128);
+        client.try_execute_settlement_swap(&caller, &token, &token, &recipient, &100i128, &90i128, &300u64);
     match result {
         Err(Ok(err)) => assert_eq!(err, TrustchainError::NotInitialized.into()),
         _ => panic!("Expected NotInitialized from un-initialized execute_settlement_swap"),
@@ -282,7 +391,7 @@ fn test_execute_settlement_swap_requires_initialization() {
 }
 
 /// Only the configured escrow contract may call execute_settlement_swap; any
-/// other caller is rejected with Unauthorized before the stub guard fires.
+/// other caller is rejected with Unauthorized before any swap logic runs.
 ///
 /// Note: `TrustchainError::Unauthorized` and `SettlementError::SwapNotImplemented`
 /// share wire discriminant #1 because this contract mixes the shared error
@@ -304,18 +413,17 @@ fn test_execute_settlement_swap_rejects_non_escrow_caller() {
     let recipient = Address::generate(&env);
 
     let result = client
-        .try_execute_settlement_swap(&intruder, &token, &token, &recipient, &100i128, &90i128);
+        .try_execute_settlement_swap(&intruder, &token, &token, &recipient, &100i128, &90i128, &300u64);
     match result {
         Err(Ok(err)) => assert_eq!(err, TrustchainError::Unauthorized.into()),
         _ => panic!("Expected Unauthorized for a non-escrow caller"),
     }
 }
 
-/// The Phase 3 guard: even the authorized escrow caller hits the
-/// SwapNotImplemented panic — this stub must never silently no-op on mainnet
-/// with unimplemented settlement logic.
+/// The authorized escrow caller swapping a token for itself is rejected with
+/// InvalidSwapParameters before any router or token call is made.
 #[test]
-fn test_execute_settlement_swap_panics_before_phase_3() {
+fn test_execute_settlement_swap_rejects_identical_tokens() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, SettlementContract);
@@ -328,11 +436,12 @@ fn test_execute_settlement_swap_panics_before_phase_3() {
     let token = Address::generate(&env);
     let recipient = Address::generate(&env);
 
-    let result =
-        client.try_execute_settlement_swap(&escrow, &token, &token, &recipient, &100i128, &90i128);
+    let result = client.try_execute_settlement_swap(
+        &escrow, &token, &token, &recipient, &100i128, &90i128, &300u64,
+    );
     match result {
-        Err(Ok(err)) => assert_eq!(err, SettlementError::SwapNotImplemented.into()),
-        _ => panic!("Expected SwapNotImplemented production guard"),
+        Err(Ok(err)) => assert_eq!(err, SettlementError::InvalidSwapParameters.into()),
+        _ => panic!("Expected InvalidSwapParameters for identical token pair"),
     }
 }
 
@@ -345,7 +454,7 @@ fn test_clear_driver_preference_removes() {
     let client = SettlementContractClient::new(&env, &contract_id);
 
     let driver = Address::generate(&env);
-    let to_token = Address::generate(&env);
+    let to_token = new_token(&env);
 
     client.set_driver_preference(&driver, &to_token);
     assert_eq!(client.get_driver_preference(&driver), Some(to_token.clone()));
@@ -428,4 +537,150 @@ fn test_execute_settlement_swap_rejects_deadline_beyond_window() {
         &99,
     );
     assert!(expired.is_err());
+}
+
+/// After a successful swap the router must hold no residual allowance over
+/// the settlement contract's input token.
+#[test]
+fn test_execute_settlement_swap_revokes_router_allowance_on_success() {
+    let f = setup_swap(false);
+    let client = SettlementContractClient::new(&f.env, &f.contract_id);
+
+    client.execute_settlement_swap(
+        &f.escrow,
+        &f.from_token,
+        &f.to_token,
+        &f.recipient,
+        &100,
+        &190,
+        &300,
+    );
+
+    // The router is approved for exactly `amount`, then explicitly revoked.
+    assert_eq!(approve_amounts(&f.env, &f.from_token), [100, 0]);
+    let input = token::Client::new(&f.env, &f.from_token);
+    assert_eq!(input.allowance(&f.contract_id, &f.router), 0);
+    assert_eq!(input.balance(&f.router), 100);
+}
+
+/// A router that consumes less than the approved amount is rejected with
+/// SwapInputNotConsumed, and the whole call (including the approval) reverts,
+/// so no allowance survives the failed swap.
+#[test]
+fn test_execute_settlement_swap_partial_consumption_leaves_no_allowance() {
+    let f = setup_swap(true);
+    let client = SettlementContractClient::new(&f.env, &f.contract_id);
+
+    let result = client.try_execute_settlement_swap(
+        &f.escrow,
+        &f.from_token,
+        &f.to_token,
+        &f.recipient,
+        &100,
+        &190,
+        &300,
+    );
+    match result {
+        Err(Ok(err)) => assert_eq!(err, SettlementError::SwapInputNotConsumed.into()),
+        _ => panic!("Expected SwapInputNotConsumed for a partially consuming router"),
+    }
+
+    let input = token::Client::new(&f.env, &f.from_token);
+    assert_eq!(input.allowance(&f.contract_id, &f.router), 0);
+    assert_eq!(input.balance(&f.contract_id), 100);
+}
+
+/// Boundary: swapping the contract's entire balance still leaves a zero
+/// allowance, and a follow-up swap with no remaining balance is rejected
+/// before any new approval is granted.
+#[test]
+fn test_execute_settlement_swap_full_balance_then_insufficient_balance() {
+    let f = setup_swap(false);
+    let client = SettlementContractClient::new(&f.env, &f.contract_id);
+
+    client.execute_settlement_swap(
+        &f.escrow,
+        &f.from_token,
+        &f.to_token,
+        &f.recipient,
+        &100,
+        &0,
+        &300,
+    );
+    let input = token::Client::new(&f.env, &f.from_token);
+    assert_eq!(input.balance(&f.contract_id), 0);
+    assert_eq!(input.allowance(&f.contract_id, &f.router), 0);
+
+    let result = client.try_execute_settlement_swap(
+        &f.escrow,
+        &f.from_token,
+        &f.to_token,
+        &f.recipient,
+        &1,
+        &0,
+        &300,
+    );
+    match result {
+        Err(Ok(err)) => assert_eq!(err, SettlementError::InsufficientSwapBalance.into()),
+        _ => panic!("Expected InsufficientSwapBalance once the balance is spent"),
+    }
+    assert_eq!(input.allowance(&f.contract_id, &f.router), 0);
+}
+
+/// An address with no deployed contract behind it cannot be stored as a
+/// payout preference.
+#[test]
+fn test_set_driver_preference_rejects_non_contract_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+
+    let driver = Address::generate(&env);
+    let not_a_token = Address::generate(&env);
+
+    let result = client.try_set_driver_preference(&driver, &not_a_token);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, SettlementError::InvalidPreferenceToken.into()),
+        _ => panic!("Expected InvalidPreferenceToken for an address with no contract"),
+    }
+    assert_eq!(client.get_driver_preference(&driver), None);
+}
+
+/// A deployed contract that does not implement the token interface is
+/// rejected the same way.
+#[test]
+fn test_set_driver_preference_rejects_non_token_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+
+    let driver = Address::generate(&env);
+    let router = env.register_contract(None, MockSwapRouter);
+
+    let result = client.try_set_driver_preference(&driver, &router);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, SettlementError::InvalidPreferenceToken.into()),
+        _ => panic!("Expected InvalidPreferenceToken for a non-token contract"),
+    }
+    assert_eq!(client.get_driver_preference(&driver), None);
+}
+
+/// Boundary: a rejected update must not clobber an existing valid preference.
+#[test]
+fn test_rejected_preference_keeps_previous_valid_preference() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+
+    let driver = Address::generate(&env);
+    let valid = new_token(&env);
+    client.set_driver_preference(&driver, &valid);
+
+    let invalid = Address::generate(&env);
+    assert!(client.try_set_driver_preference(&driver, &invalid).is_err());
+
+    assert_eq!(client.get_driver_preference(&driver), Some(valid));
 }

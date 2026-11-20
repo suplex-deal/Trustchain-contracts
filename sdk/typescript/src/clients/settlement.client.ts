@@ -4,7 +4,7 @@
 
 import { ContractInvokeOptions } from '../types/common.types';
 import * as SettlementTypes from '../types/settlement.types';
-import { ContractInvoker, address, i128 } from './invoker';
+import { ContractInvoker, address, i128, u64 } from './invoker';
 
 export class SettlementClient {
   private readonly invoker: ContractInvoker;
@@ -33,6 +33,15 @@ export class SettlementClient {
     await this.invoker.call('set_driver_preference', [address(params.driver), address(params.toToken)], options);
   }
 
+  /**
+   * Remove the driver's custom payout preference so settlements fall back to
+   * the default escrow token. The driver must sign. Clearing when no
+   * preference is set is a no-op on-chain.
+   */
+  async clearDriverPreference(driver: string, options?: ContractInvokeOptions): Promise<void> {
+    await this.invoker.call('clear_driver_preference', [address(driver)], options);
+  }
+
   async executeSettlementSwap(
     params: SettlementTypes.ExecuteSettlementSwapParams,
     options?: ContractInvokeOptions
@@ -46,6 +55,7 @@ export class SettlementClient {
         address(params.recipient),
         i128(params.amount),
         i128(params.minAmountOut),
+        u64(params.deadline),
       ],
       options
     );
