@@ -7393,3 +7393,136 @@ fn test_admin_freeze_funds_is_idempotent() {
 
     assert_eq!(client.get_escrow(&10405u64).status, EscrowStatus::Paused);
 }
+
+// ── Issue #104: persistent TTL expiry and restoration ─────────────────────
+//
+// The Issue #460 tests above confirm each write site calls `extend_ttl`, but
+// none of them simulate a ledger actually aging an entry close to (or past)
+// its threshold. These tests advance `env.ledger().sequence_number` the way
+// `settlement_contract::test_set_driver_preference_extends_instance_ttl` and
+// `dispute_resolution_contract`'s equivalent tests do, to cover:
+// 1. An entry nearing expiry gets correctly *restored* to the full TTL window
+//    the next time it is written (not just left at whatever remains).
+// 2. A persistent entry that is genuinely allowed to expire (no restoring
+//    write before the ledger advances past its TTL) is evicted by the host
+//    and becomes inaccessible, matching Soroban's persistent-storage model.
+
+#[test]
+fn test_sender_volume_ttl_restored_after_aging_near_expiry() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let driver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = setup_token(&env, &token_admin);
+
+    client.init(&admin, &token, &100);
+    mint(&env, &token, &sender, 2000);
+    client.create_escrow(
+        &sender, &recipient, &driver, &10500u64, &token, &1000, &None,
+    );
+    client.release_escrow(&recipient, &10500u64);
+
+    // First settlement extends the entry to the full window.
+    assert_eq!(
+        sender_volume_ttl(&env, &contract_id, &sender),
+        EXPECTED_VOLUME_TTL
+    );
+
+    // Age the ledger almost all the way to that entry's expiry — it is
+    // still alive, but only just, and the remaining TTL is far below the
+    // protocol's extend-to window.
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += ttl::LEDGER_TTL_EXTEND_TO - 10;
+    });
+    let aged_ttl = sender_volume_ttl(&env, &contract_id, &sender);
+    assert!(
+        aged_ttl < EXPECTED_VOLUME_TTL,
+        "expected the entry's remaining TTL to have shrunk after aging the ledger, got {aged_ttl}"
+    );
+
+    // A second settlement for the same sender must restore the entry to the
+    // full TTL window relative to the *current* (advanced) ledger sequence,
+    // not merely leave it at whatever was left over.
+    client.create_escrow(
+        &sender, &recipient, &driver, &10501u64, &token, &1000, &None,
+    );
+    client.release_escrow(&recipient, &10501u64);
+
+    assert_eq!(client.get_sender_volume(&sender), 2u32);
+    assert_eq!(
+        sender_volume_ttl(&env, &contract_id, &sender),
+        EXPECTED_VOLUME_TTL,
+        "extend_ttl must restore the entry to the full window after it aged near expiry"
+    );
+}
+
+#[test]
+fn test_volume_tiers_ttl_restored_after_aging_near_expiry() {
+    let (env, contract_id) = setup_env();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = setup_token(&env, &token_admin);
+
+    client.init(&admin, &token, &0);
+    client.set_volume_tiers(&admin, &soroban_sdk::Vec::new(&env));
+
+    let initial_ttl = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::VolumeTiers)
+    });
+    assert_eq!(initial_ttl, EXPECTED_VOLUME_TTL);
+
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += ttl::LEDGER_TTL_EXTEND_TO - 10;
+    });
+    let aged_ttl = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::VolumeTiers)
+    });
+    assert!(
+        aged_ttl < EXPECTED_VOLUME_TTL,
+        "expected VolumeTiers TTL to have shrunk after aging the ledger, got {aged_ttl}"
+    );
+
+    // Re-writing the tiers (e.g. an admin updating a discount) must restore
+    // the entry's TTL to the full window from the now-advanced sequence.
+    client.set_volume_tiers(&admin, &soroban_sdk::Vec::new(&env));
+
+    let restored_ttl = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::VolumeTiers)
+    });
+    assert_eq!(
+        restored_ttl, EXPECTED_VOLUME_TTL,
+        "extend_ttl must restore VolumeTiers to the full window after aging near expiry"
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_persistent_entry_access_panics_once_genuinely_expired() {
+    let (env, contract_id) = setup_env();
+
+    // Write a persistent entry with no `extend_ttl` call, so it is left at
+    // whatever default TTL the host assigns on creation (mirrors the
+    // `default_persistent_ttl` probe used by the TTL-extension tests above).
+    let key = Symbol::new(&env, "ttl_expiry_probe");
+    let starting_ttl = env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&key, &1u32);
+        env.storage().persistent().get_ttl(&key)
+    });
+
+    // Advance the ledger strictly past that entry's live-until sequence —
+    // unlike the restoration tests above, nothing writes to this key again
+    // before it expires, so the host must evict it. Accessing an expired
+    // persistent entry is a host-level error, not a quiet `None`.
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += starting_ttl + 1;
+    });
+
+    env.as_contract(&contract_id, || {
+        let _: u32 = env.storage().persistent().get(&key).unwrap();
+    });
+}

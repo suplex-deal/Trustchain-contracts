@@ -10,6 +10,14 @@ Typed SDK for interacting with Trustchain-contracts on Stellar Soroban.
 npm install @trustchain/sdk
 ```
 
+> **Working on the SDK in this repo (contributors):** don't run `npm install`
+> inside `sdk/typescript/`. Run `npm ci` instead, so you build against the
+> exact dependency versions recorded in the committed
+> `sdk/typescript/package-lock.json` — the same lockfile-based convention the
+> Rust contracts use via `cargo build --locked` against `Cargo.lock`. See
+> [`docs/SDK_DEPENDENCY_POLICY.md`](../../docs/SDK_DEPENDENCY_POLICY.md) for
+> the full policy; `.github/workflows/ci.yml` builds the SDK the same way.
+
 ## SDK Status
 
 This package is currently a typed API preview, not a connected runtime client. The generated method signatures are present, but the underlying Soroban invocation layer is not complete in this repository snapshot. The examples below intentionally fail at runtime with a clear "not implemented" message rather than silently pretending a chain call happened.
