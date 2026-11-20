@@ -27,6 +27,21 @@ export interface SetDisputeContractParams {
   disputeContract: string;
 }
 
+/**
+ * Mirrors the Rust `PendingPeerContractChange` struct returned by
+ * `get_pending_delivery_contract`. Present only when a timelock proposal
+ * to change the delivery contract peer address is in-flight; `null` means
+ * no change is pending.
+ */
+export interface PendingDeliveryContractInfo {
+  /** The proposed new delivery contract address. */
+  address: string;
+  /** The admin address that proposed the change. */
+  proposedBy: string;
+  /** Unix timestamp (seconds) after which the change may be confirmed. */
+  activatesAt: bigint;
+}
+
 export interface RegisterDriverParams {
   driver: string;
 }

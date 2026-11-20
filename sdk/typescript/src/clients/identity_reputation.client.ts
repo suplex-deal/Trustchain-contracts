@@ -47,6 +47,23 @@ export class IdentityReputationClient {
     await this.invoker.call('confirm_delivery_contract', [], options);
   }
 
+  /**
+   * Get the pending delivery contract (peer) change, if any timelock
+   * proposal is in-flight. Returns null when no change is pending.
+   */
+  async getPendingDeliveryContract(
+    options?: ContractInvokeOptions
+  ): Promise<IdentityReputationTypes.PendingDeliveryContractInfo | null> {
+    const raw = await this.invoker.call('get_pending_delivery_contract', [], options);
+    if (raw === null || raw === undefined) return null;
+    const record = raw as Record<string, unknown>;
+    return {
+      address: String(record.address),
+      proposedBy: String(record.proposed_by),
+      activatesAt: BigInt(String(record.activates_at)),
+    };
+  }
+
   async setDisputeContract(params: IdentityReputationTypes.SetDisputeContractParams, options?: ContractInvokeOptions): Promise<void> {
     await this.invoker.call('set_dispute_contract', [address(params.admin), address(params.disputeContract)], options);
   }
