@@ -57,7 +57,7 @@ echo "${BLUE}Checking prerequisites...${NC}" >&2
 
 if ! command -v stellar &> /dev/null; then
     echo "${RED}❌ Stellar CLI not found. Please install it first.${NC}" >&2
-    echo "   cargo install --locked stellar-cli" >&2
+    echo "   cargo install --locked stellar-cli --version 21.5.0" >&2
     exit 1
 fi
 
@@ -112,6 +112,62 @@ CONTRACT_ID=$(stellar contract deploy \
 
 echo "${GREEN}✓ $CONTRACT_NAME deployed: $CONTRACT_ID${NC}" >&2
 echo "" >&2
+
+# Post-deployment verification (#97): read back the WASM that is actually
+# live on-chain for the newly deployed contract ID and hash it, instead of
+# trusting that `stellar contract deploy` exiting 0 means the deployed code
+# matches what we just built. A mismatch here means the deploy did not take
+# effect the way we think it did (wrong network, stale CLI, RPC lag, etc.).
+echo "${BLUE}Verifying on-chain WASM for $CONTRACT_NAME...${NC}" >&2
+LOCAL_WASM_SHA256=$(sha256sum "$WASM_PATH" | awk '{print $1}')
+
+VERIFY_DIR=$(mktemp -d)
+trap 'rm -rf "$VERIFY_DIR"' EXIT
+DEPLOYED_WASM_PATH="$VERIFY_DIR/${CONTRACT_NAME}.deployed.wasm"
+
+if ! stellar contract fetch --id "$CONTRACT_ID" --network "$NETWORK" -o "$DEPLOYED_WASM_PATH" &> /dev/null; then
+    echo "${RED}❌ Could not fetch on-chain WASM for $CONTRACT_ID to verify the deploy.${NC}" >&2
+    exit 1
+fi
+
+DEPLOYED_WASM_SHA256=$(sha256sum "$DEPLOYED_WASM_PATH" | awk '{print $1}')
+
+if [ "$LOCAL_WASM_SHA256" != "$DEPLOYED_WASM_SHA256" ]; then
+    echo "${RED}❌ Deployed WASM hash mismatch for $CONTRACT_NAME!${NC}" >&2
+    echo "   Built locally:   $LOCAL_WASM_SHA256" >&2
+    echo "   Live on $NETWORK: $DEPLOYED_WASM_SHA256" >&2
+    echo "   The contract ID returned by 'stellar contract deploy' does not" >&2
+    echo "   currently serve the code we just built. Treat this deploy as" >&2
+    echo "   failed; do not record $CONTRACT_ID as the deployed address." >&2
+    exit 1
+fi
+echo "${GREEN}✓ On-chain WASM hash matches the local build ($LOCAL_WASM_SHA256)${NC}" >&2
+
+# Verify against a known-good release manifest, if one was supplied (#96).
+# RELEASE_WASM_SHA256SUMS points at a SHA256SUMS.txt produced by
+# .github/workflows/release.yml (the "Generate Checksums" step). If the
+# manifest records a hash for this contract, the just-deployed WASM must
+# match it exactly, catching a stale/mismatched deploy that used a build
+# artifact other than the one tagged for this release.
+if [ -n "${RELEASE_WASM_SHA256SUMS:-}" ]; then
+    if [ ! -f "$RELEASE_WASM_SHA256SUMS" ]; then
+        echo "${RED}❌ RELEASE_WASM_SHA256SUMS is set but file not found: $RELEASE_WASM_SHA256SUMS${NC}" >&2
+        exit 1
+    fi
+    EXPECTED_SHA256=$(grep -E "  ${CONTRACT_NAME}\.wasm\$" "$RELEASE_WASM_SHA256SUMS" | awk '{print $1}')
+    if [ -z "$EXPECTED_SHA256" ]; then
+        echo "${YELLOW}⚠ No entry for ${CONTRACT_NAME}.wasm in $RELEASE_WASM_SHA256SUMS; skipping release-hash check.${NC}" >&2
+    elif [ "$EXPECTED_SHA256" != "$DEPLOYED_WASM_SHA256" ]; then
+        echo "${RED}❌ Deployed WASM hash does not match the release artifact for $CONTRACT_NAME!${NC}" >&2
+        echo "   Release manifest ($RELEASE_WASM_SHA256SUMS): $EXPECTED_SHA256" >&2
+        echo "   Deployed on $NETWORK:                        $DEPLOYED_WASM_SHA256" >&2
+        echo "   This deploy does not correspond to the released build. Do not" >&2
+        echo "   record $CONTRACT_ID as the deployed address for this release." >&2
+        exit 1
+    else
+        echo "${GREEN}✓ Deployed WASM hash matches the release artifact ($EXPECTED_SHA256)${NC}" >&2
+    fi
+fi
 
 # Merge this contract's ID into any existing output file for this network,
 # so deploying contracts one at a time doesn't clobber previously deployed IDs.

@@ -32,7 +32,7 @@ echo "${BLUE}Checking prerequisites...${NC}"
 
 if ! command -v stellar &> /dev/null; then
     echo "${RED}❌ Stellar CLI not found. Please install it first.${NC}"
-    echo "   cargo install --locked stellar-cli"
+    echo "   cargo install --locked stellar-cli --version 21.5.0"
     exit 1
 fi
 

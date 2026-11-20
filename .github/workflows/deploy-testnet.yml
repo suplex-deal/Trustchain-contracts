@@ -26,11 +26,34 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: Test Source Revision
+    runs-on: ubuntu-latest
+    # Deployment must never run against a revision whose tests haven't been
+    # proven to pass. workflow_dispatch can be fired from any branch/SHA and
+    # has no relationship to ci.yml's run on that commit, so re-run the test
+    # suite here and let the deploy job gate on it via `needs:` (#98).
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Set up Rust toolchain
+      uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      with:
+        targets: wasm32v1-none
+
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+    - name: Run Tests
+      run: cargo test --locked --verbose
+
   deploy:
     name: Deploy Contract to Testnet
+    needs: test
     runs-on: ubuntu-latest
     environment: testnet
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v7
@@ -44,8 +67,11 @@ jobs:
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
     - name: Install Stellar CLI
+      # Pinned to the same version documented in docs/DEPLOYMENT.md so a
+      # fresh stellar-cli release can't silently change deploy behavior
+      # between runs of this workflow (#99).
       run: |
-        cargo install --locked stellar-cli --features opt
+        cargo install --locked stellar-cli --version 21.5.0 --features opt
 
     - name: Build Contracts
       run: cargo build --locked --target wasm32v1-none --release
