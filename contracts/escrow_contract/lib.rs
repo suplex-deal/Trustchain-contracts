@@ -699,6 +699,10 @@ impl EscrowContract {
             panic_with_error!(&env, TrustchainError::AlreadyInitialized);
         }
         admin.require_auth();
+        // Issue #94: admin and token must be distinct, real addresses before
+        // either is persisted — rejects an admin/token mix-up or a
+        // self-referential config before any state is written.
+        shared_types::validate_init_addresses(&env, &[&admin, &token]);
         if platform_fee_bps > constants::MAX_PLATFORM_FEE_BPS {
             panic_with_error!(&env, EscrowError::InvalidFee);
         }

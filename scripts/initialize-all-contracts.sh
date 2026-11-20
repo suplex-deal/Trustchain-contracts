@@ -88,6 +88,40 @@ invoke_contract() {
         -- "$@"
 }
 
+# Issue #93: every contract's init() panics with AlreadyInitialized on a
+# second call, and this script runs under `set -e`, so a failure partway
+# through (e.g. step 3's init rejected on-chain) previously left no way to
+# resume: re-running from the top would hit AlreadyInitialized on step 1 and
+# abort again before ever reaching the steps that still need to run.
+#
+# is_contract_initialized() probes each contract's own read-only accessor
+# (get_admin on every contract here) to find out, independent of this
+# script's own state, whether that specific contract was already
+# initialized on-chain. init_if_needed() uses that to skip contracts already
+# done and only run init on the ones still pending, so re-running the script
+# after a partial failure resumes instead of erroring or double-initializing.
+is_contract_initialized() {
+    local contract_id=$1
+    stellar contract invoke \
+        --id "$contract_id" \
+        --source "$DEPLOYER_IDENTITY" \
+        --network "$NETWORK" \
+        -- get_admin &> /dev/null
+}
+
+init_if_needed() {
+    local label=$1
+    local contract_id=$2
+    shift 2
+    if is_contract_initialized "$contract_id"; then
+        echo "✓ $label already initialized (resuming — skipped)"
+    else
+        echo "Initializing $label..."
+        invoke_contract "$contract_id" "$@"
+        echo "✓ $label initialized"
+    fi
+}
+
 DISPUTE_TIME_LIMIT=${DISPUTE_TIME_LIMIT:-86400}
 DISPUTE_RESOLUTION_LIMIT=${DISPUTE_RESOLUTION_LIMIT:-86400}
 
@@ -99,45 +133,33 @@ echo "Identity Reputation Contract: $IDENTITY_ID"
 echo "Settlement Contract: $SETTLEMENT_ID"
 echo ""
 
-echo "Initializing Escrow Contract..."
-invoke_contract "$ESCROW_ID" init \
+init_if_needed "Escrow Contract" "$ESCROW_ID" init \
     --admin "$ADMIN_ADDRESS" \
     --token "$TOKEN_ADDRESS" \
     --platform_fee_bps "${PLATFORM_FEE_BPS:-250}"
-echo "✓ Escrow initialized"
 
-echo "Initializing Delivery Contract..."
-invoke_contract "$DELIVERY_ID" init \
+init_if_needed "Delivery Contract" "$DELIVERY_ID" init \
     --admin "$ADMIN_ADDRESS" \
     --escrow_contract "$ESCROW_ID"
-echo "✓ Delivery initialized"
 
-echo "Initializing Dispute Resolution Contract..."
-invoke_contract "$DISPUTE_ID" init \
+init_if_needed "Dispute Resolution Contract" "$DISPUTE_ID" init \
     --admin "$ADMIN_ADDRESS" \
     --delivery_contract "$DELIVERY_ID" \
     --escrow_contract "$ESCROW_ID" \
     --dispute_time_limit "$DISPUTE_TIME_LIMIT" \
     --dispute_resolution_limit "$DISPUTE_RESOLUTION_LIMIT"
-echo "✓ Dispute resolution initialized"
 
-echo "Initializing Fleet Management Contract..."
-invoke_contract "$FLEET_ID" init \
+init_if_needed "Fleet Management Contract" "$FLEET_ID" init \
     --admin "$ADMIN_ADDRESS"
-echo "✓ Fleet management initialized"
 
-echo "Initializing Identity Reputation Contract..."
-invoke_contract "$IDENTITY_ID" init \
+init_if_needed "Identity Reputation Contract" "$IDENTITY_ID" init \
     --admin "$ADMIN_ADDRESS" \
     --delivery_contract "$DELIVERY_ID" \
     --dispute_contract "$DISPUTE_ID"
-echo "✓ Identity reputation initialized"
 
-echo "Initializing Settlement Contract..."
-invoke_contract "$SETTLEMENT_ID" init \
+init_if_needed "Settlement Contract" "$SETTLEMENT_ID" init \
     --admin "$ADMIN_ADDRESS" \
     --escrow_contract "$ESCROW_ID"
-echo "✓ Settlement initialized"
 echo ""
 
 echo "Wiring contract integrations..."

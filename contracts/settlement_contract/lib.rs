@@ -45,6 +45,8 @@ impl SettlementContract {
             panic_with_error!(&env, TrustchainError::AlreadyInitialized);
         }
         admin.require_auth();
+        // Issue #94: admin/escrow_contract must be distinct, non-self addresses.
+        shared_types::validate_init_addresses(&env, &[&admin, &escrow_contract]);
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage().instance().set(&DataKey::EscrowContract, &escrow_contract);
         env.storage()

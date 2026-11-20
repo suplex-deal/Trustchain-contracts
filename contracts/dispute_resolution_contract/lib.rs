@@ -286,6 +286,9 @@ impl DisputeResolutionContract {
             panic_with_error!(&env, TrustchainError::AlreadyInitialized);
         }
         admin.require_auth();
+        // Issue #94: admin, delivery_contract and escrow_contract must all be
+        // distinct, non-self addresses before any is persisted.
+        shared_types::validate_init_addresses(&env, &[&admin, &delivery_contract, &escrow_contract]);
         if !(MIN_DISPUTE_TIME_LIMIT..=MAX_DISPUTE_WINDOW).contains(&dispute_time_limit) {
             panic_with_error!(&env, TrustchainError::InvalidState);
         }

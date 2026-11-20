@@ -1,11 +1,27 @@
 #!/bin/bash
 
 # Trustchain-contracts - Complete Deployment Script
-# Usage: ./deploy-all-contracts.sh [testnet|mainnet]
+# Usage: ./deploy-all-contracts.sh [testnet|mainnet] [--dry-run] [--yes]
+#
+# Issue #92: a mainnet run submits real, irreversible on-chain transactions
+# that spend real fees and deploy contracts under the deployer identity's
+# funded account, with no prior warning other than the [network] argument.
+# This script now requires explicit confirmation before a mainnet run
+# executes anything, and supports --dry-run to preview exactly what would be
+# deployed without submitting a single transaction.
 
 set -e
 
 NETWORK=${1:-testnet}
+DRY_RUN=false
+CONFIRMED=false
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        --yes|--confirm) CONFIRMED=true ;;
+    esac
+done
+
 # Name of the Stellar CLI identity every deploy/initialize script signs with.
 # Overridable, but the default must match the identity provisioned by
 # .github/workflows/deploy-testnet.yml and documented in docs/DEPLOYMENT.md.
@@ -18,6 +34,32 @@ echo "🚀 Trustchain-contracts Deployment"
 echo "=================================="
 echo "Network: $NETWORK"
 echo "Date: $(date)"
+if [ "$DRY_RUN" = true ]; then
+    echo "Mode: DRY RUN (no transactions will be submitted)"
+fi
+
+# Mainnet is irreversible and costs real fees: require an explicit --yes/
+# --confirm flag, or an interactive typed confirmation, before continuing.
+# --dry-run always bypasses this (a dry run submits nothing).
+if [ "$NETWORK" = "mainnet" ] && [ "$DRY_RUN" = false ]; then
+    if [ "$CONFIRMED" = false ]; then
+        if [ -t 0 ]; then
+            echo ""
+            echo "⚠️  You are about to deploy ALL contracts to MAINNET using identity '$DEPLOYER_IDENTITY'."
+            echo "   This submits real, irreversible transactions and spends real network fees."
+            read -r -p "   Type 'deploy mainnet' to continue: " CONFIRM_TEXT
+            if [ "$CONFIRM_TEXT" != "deploy mainnet" ]; then
+                echo "❌ Confirmation text did not match. Aborting."
+                exit 1
+            fi
+        else
+            echo "❌ Refusing to deploy to mainnet without confirmation." >&2
+            echo "   Pass --yes (or --confirm) to proceed non-interactively, or run with --dry-run to preview." >&2
+            exit 1
+        fi
+    fi
+    echo "✓ Mainnet deployment confirmed"
+fi
 echo ""
 
 # Colors for output
@@ -60,9 +102,12 @@ echo "${GREEN}✓ Prerequisites OK${NC}"
 echo ""
 
 # Build contracts
+# Issue #95: --locked, matching ci.yml/deploy-testnet.yml/release.yml, so this
+# deployment build is reproducible from the committed Cargo.lock rather than
+# re-resolving dependency versions at build time.
 echo "${BLUE}Building contracts...${NC}"
 cd "$PROJECT_ROOT"
-cargo build --target wasm32v1-none --release
+cargo build --locked --target wasm32v1-none --release
 
 if [ $? -ne 0 ]; then
     echo "${RED}❌ Build failed${NC}"
@@ -71,6 +116,16 @@ fi
 
 echo "${GREEN}✓ Build successful${NC}"
 echo ""
+
+if [ "$DRY_RUN" = true ]; then
+    echo "${YELLOW}Dry run: build succeeded. The following contracts would be deployed to '$NETWORK':${NC}"
+    for c in "escrow_contract" "delivery_contract" "dispute_resolution_contract" "fleet_management_contract" "identity_reputation_contract" "settlement_contract"; do
+        echo "  - $c ($PROJECT_ROOT/target/wasm32v1-none/release/${c}.wasm)"
+    done
+    echo ""
+    echo "No transactions were submitted. Re-run without --dry-run to deploy for real."
+    exit 0
+fi
 
 # Deploy function
 deploy_contract() {

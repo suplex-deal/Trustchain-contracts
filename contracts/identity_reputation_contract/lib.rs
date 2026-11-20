@@ -103,6 +103,9 @@ impl IdentityReputationContract {
             panic_with_error!(&env, TrustchainError::AlreadyInitialized);
         }
         admin.require_auth();
+        // Issue #94: admin, delivery_contract and dispute_contract must all
+        // be distinct, non-self addresses before any is persisted.
+        shared_types::validate_init_addresses(&env, &[&admin, &delivery_contract, &dispute_contract]);
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage()
             .instance()

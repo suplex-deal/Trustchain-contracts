@@ -203,6 +203,8 @@ impl DeliveryContract {
             panic_with_error!(&env, TrustchainError::AlreadyInitialized);
         }
         admin.require_auth();
+        // Issue #94: validate admin/escrow_contract before persisting either.
+        shared_types::validate_init_addresses(&env, &[&admin, &escrow_contract]);
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage()
             .instance()

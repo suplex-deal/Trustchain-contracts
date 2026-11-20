@@ -251,6 +251,9 @@ impl FleetManagementContract {
             panic_with_error!(&env, TrustchainError::AlreadyInitialized);
         }
         admin.require_auth();
+        // Issue #94: an admin equal to this contract's own address can never
+        // legitimately authorize anything via require_auth.
+        shared_types::validate_init_addresses(&env, &[&admin]);
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage()
             .persistent()
