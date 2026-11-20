@@ -227,7 +227,7 @@ impl IdentityReputationContract {
             ttl::LEDGER_TTL_EXTEND_TO,
         );
         env.events().publish(
-            (soroban_sdk::Symbol::new(&env, "delivery_contract_change_proposed"),),
+            (soroban_sdk::Symbol::new(&env, "delivery_contract_proposed"),),
             (admin, delivery_contract, activates_at),
         );
     }

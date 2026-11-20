@@ -3,7 +3,7 @@
 use shared_types::{
     events, ttl, DeliveryId, DeliveryStatus, DisputeRaisedEvent, DisputeResolvedPayoutEvent,
     DisputeResolvedRefundEvent, DisputeResolvedSplitEvent, EscrowRecord, EscrowStatus,
-    TrustchainError, PendingPeerContractChange,
+    TrustchainError, PendingPeerContractChange, HIGH_VALUE_DISPUTE_THRESHOLD,
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype, panic_with_error, Address, BytesN, Env, IntoVal, Symbol,
@@ -551,7 +551,7 @@ impl DisputeResolutionContract {
         // #382 precedent: emit an event so off-chain indexers can track when
         // this contract pointer is proposed by an admin.
         env.events().publish(
-            (Symbol::new(&env, "delivery_contract_change_proposed"),),
+            (Symbol::new(&env, "delivery_contract_proposed"),),
             (caller, delivery_contract, activates_at),
         );
     }
@@ -609,6 +609,31 @@ impl DisputeResolutionContract {
         env.storage()
             .instance()
             .set(&DataKey::EscrowContract, &escrow_contract);
+        env.storage()
+            .instance()
+            .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
+        env.events().publish(
+            (Symbol::new(&env, "escrow_contract_change_proposed"),),
+            (caller, escrow_contract, activates_at),
+        );
+    }
+
+    #[allow(deprecated)]
+    pub fn confirm_escrow_contract(env: Env) {
+        let pending: PendingPeerContractChange = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingEscrowContract)
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
+        if env.ledger().timestamp() < pending.activates_at {
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowContract, &pending.address);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingEscrowContract);
         env.storage()
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);

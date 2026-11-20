@@ -281,7 +281,7 @@ impl FleetManagementContract {
             .instance()
             .extend_ttl(ttl::LEDGER_TTL_THRESHOLD, ttl::LEDGER_TTL_EXTEND_TO);
         env.events().publish(
-            (Symbol::new(&env, "identity_contract_change_proposed"),),
+            (Symbol::new(&env, "identity_contract_proposed"),),
             (admin, identity_contract, activates_at),
         );
     }
@@ -608,7 +608,7 @@ impl FleetManagementContract {
             ttl::LEDGER_TTL_EXTEND_TO,
         );
         env.events().publish(
-            (Symbol::new(&env, "fleet_owner_reassignment_proposed"),),
+            (Symbol::new(&env, "fleet_owner_reassign_proposed"),),
             (fleet_id, admin, new_owner),
         );
     }

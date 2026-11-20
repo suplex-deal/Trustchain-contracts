@@ -37,6 +37,18 @@ export enum DeliveryErrorCode {
    * at a point where a funded escrow is a precondition (e.g. `mark_in_transit`).
    */
   EscrowNotLocked = 6,
+  /** `get_deliveries_page` was called with an unknown index kind. */
+  InvalidIndexKind = 7,
+  /**
+   * `cancel_delivery` was called after the driver started transit. Once a
+   * delivery is `InTransit` the sender can no longer cancel it.
+   */
+  TransitAlreadyStarted = 8,
+  /**
+   * The escrow stored under the delivery ID does not fund this delivery: its
+   * delivery ID, sender, recipient or assigned driver differs from the record.
+   */
+  EscrowMismatch = 9,
 }
 
 /**
@@ -49,8 +61,9 @@ export const DeliveryErrorCodes = {
   InvalidDriver: 4,
   InvalidParties: 5,
   EscrowNotLocked: 6,
-  NoPendingContractChange: 7,
-  ContractChangeTimelockNotElapsed: 8,
+  InvalidIndexKind: 7,
+  TransitAlreadyStarted: 8,
+  EscrowMismatch: 9,
 } as const;
 
 export interface CreateDeliveryParams {

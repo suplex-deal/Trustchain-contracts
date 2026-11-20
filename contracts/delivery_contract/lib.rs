@@ -126,6 +126,15 @@ pub enum DeliveryError {
     /// (currently: the `Active -> InTransit` transition). See Issue #298.
     EscrowNotLocked = 6,
     InvalidIndexKind = 7,
+    /// The sender tried to cancel a delivery whose driver has already taken
+    /// custody (`InTransit`). Once transit begins the sender can no longer
+    /// cancel and reclaim the escrow on their own: the delivery must be
+    /// completed, disputed, or reclaimed after escrow expiry.
+    TransitAlreadyStarted = 8,
+    /// The escrow stored under this delivery ID does not fund this delivery:
+    /// its `delivery_id`, `sender`, `recipient` or `driver` differs from the
+    /// `DeliveryRecord`. Such an escrow would pay or refund the wrong party.
+    EscrowMismatch = 9,
 }
 
 mod constants {
@@ -140,7 +149,9 @@ mod constants {
 ///   Active    → InTransit, Disputed, Cancelled
 ///   InTransit → Delivered, Disputed, Cancelled  (Issue #300: Cancelled added so
 ///               reclaim_delivery_expired_escrow can synchronise an in-transit
-///               delivery whose escrow expired)
+///               delivery whose escrow expired. This is the *only* route to
+///               Cancelled from InTransit: `cancel_delivery` rejects it with
+///               `DeliveryError::TransitAlreadyStarted`.)
 ///   Delivered → Disputed
 ///   Disputed  → Delivered (only via dispute resolution)
 ///   Disputed  → Resolved (only via dispute resolution, Issue #447)
@@ -190,6 +201,32 @@ fn validate_delivery_metadata(
         return Err(DeliveryError::InvalidMetadata);
     }
     Ok(())
+}
+
+/// Returns `true` when `escrow` is the escrow funding `delivery`: same
+/// delivery ID, same sender and recipient, and — once a driver is assigned —
+/// the same driver.
+///
+/// Escrows are created by a separate call on a separate contract and are
+/// keyed only by delivery ID, so the record found under that ID is not
+/// guaranteed to belong to this delivery (for example when the escrow was
+/// created before a driver was assigned, or while the escrow contract had no
+/// delivery contract configured to cross-check against).
+fn escrow_matches_delivery(
+    delivery_id: DeliveryId,
+    delivery: &DeliveryRecord,
+    escrow: &shared_types::EscrowRecord,
+) -> bool {
+    if escrow.delivery_id != u64::from(delivery_id)
+        || escrow.sender != delivery.sender
+        || escrow.recipient != delivery.recipient
+    {
+        return false;
+    }
+    match &delivery.driver {
+        Some(driver) => *driver == escrow.driver,
+        None => true,
+    }
 }
 
 #[contract]
@@ -325,9 +362,9 @@ impl DeliveryContract {
             .storage()
             .instance()
             .get(&DataKey::PendingEscrowContract)
-            .unwrap_or_else(|| panic_with_error!(&env, DeliveryError::NoPendingContractChange));
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NoPendingContractChange));
         if env.ledger().timestamp() < pending.activates_at {
-            panic_with_error!(&env, DeliveryError::ContractChangeTimelockNotElapsed);
+            panic_with_error!(&env, TrustchainError::ContractChangeTimelockNotElapsed);
         }
         env.storage()
             .instance()
@@ -658,6 +695,24 @@ impl DeliveryContract {
         );
     }
 
+    /// Cancel a delivery and refund its escrow to the sender.
+    ///
+    /// **Authorization:** the delivery's sender.
+    ///
+    /// **Transit rule:** cancellation is only allowed from `Pending` or
+    /// `Active`. Once the driver has called `mark_in_transit` they hold the
+    /// goods, so letting the sender cancel would refund the full escrow and
+    /// leave the driver's service unpaid. An `InTransit` delivery is rejected
+    /// with `DeliveryError::TransitAlreadyStarted`; its only exits are
+    /// `confirm_delivery`, a dispute via `dispute_resolution_contract`, or
+    /// `reclaim_delivery_expired_escrow` once the escrow has expired.
+    ///
+    /// **Escrow handling:** the escrow under `delivery_id` is refunded only
+    /// when it belongs to this delivery (same delivery ID and sender) and is
+    /// `Locked`. A foreign or already-refunded escrow is left alone and the
+    /// cancellation reports `refund_amount = 0`; an owned escrow that is
+    /// paused, in holdback or settled rejects the cancellation with
+    /// `DeliveryError::EscrowNotLocked`.
     #[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
     pub fn cancel_delivery(env: Env, sender: Address, delivery_id: DeliveryId) {
         sender.require_auth();
@@ -672,6 +727,12 @@ impl DeliveryContract {
 
         if delivery.sender != sender {
             panic_with_error!(&env, TrustchainError::Unauthorized);
+        }
+
+        // The driver has taken custody: the sender cannot unilaterally
+        // cancel and claw back the escrow from here.
+        if delivery.status == DeliveryStatus::InTransit {
+            panic_with_error!(&env, DeliveryError::TransitAlreadyStarted);
         }
 
         validate_transition(delivery.status, DeliveryStatus::Cancelled)
@@ -689,6 +750,22 @@ impl DeliveryContract {
         // attempting the refund cross-contract call (Issue #538). If no
         // escrow was attached, skip the refund and transition directly to
         // Cancelled with refund_amount = 0.
+        //
+        // When an escrow exists, its ownership and state are validated
+        // before anything is refunded or reported, so `refund_amount` in the
+        // `delivery_cancelled` event is non-zero only when this call actually
+        // returned funds to the sender:
+        //   - not owned by this delivery (different delivery_id or sender):
+        //     left untouched, cancellation proceeds, refund_amount = 0. A
+        //     foreign escrow must neither block the cancellation nor be
+        //     reported as this sender's refund.
+        //   - owned and Locked: refunded, refund_amount = escrow.amount.
+        //   - owned and already Refunded (e.g. reclaimed directly on the
+        //     escrow contract): nothing left to refund, refund_amount = 0.
+        //   - owned and Paused / Holdback / Released / Split: the funds are
+        //     under dispute or settled, so cancellation is rejected with
+        //     `DeliveryError::EscrowNotLocked`.
+        // The skipped cases also emit `cancel_escrow_skipped` with a reason.
         let mut refund_amount: i128 = 0;
         let has_escrow: bool = env.invoke_contract(
             &escrow_address,
@@ -701,17 +778,39 @@ impl DeliveryContract {
                 &soroban_sdk::Symbol::new(&env, "get_escrow"),
                 soroban_sdk::vec![&env, u64::from(delivery_id).into_val(&env)],
             );
-            refund_amount = escrow.amount;
 
-            let _: () = env.invoke_contract(
-                &escrow_address,
-                &soroban_sdk::Symbol::new(&env, "refund_escrow"),
-                soroban_sdk::vec![
-                    &env,
-                    sender.into_val(&env),
-                    u64::from(delivery_id).into_val(&env),
-                ],
-            );
+            let owned = escrow.delivery_id == u64::from(delivery_id)
+                && escrow.sender == delivery.sender;
+            let skip_reason = if !owned {
+                Some("foreign_escrow")
+            } else {
+                match escrow.status {
+                    shared_types::EscrowStatus::Locked => None,
+                    shared_types::EscrowStatus::Refunded => Some("already_refunded"),
+                    _ => panic_with_error!(&env, DeliveryError::EscrowNotLocked),
+                }
+            };
+
+            match skip_reason {
+                None => {
+                    let _: () = env.invoke_contract(
+                        &escrow_address,
+                        &soroban_sdk::Symbol::new(&env, "refund_escrow"),
+                        soroban_sdk::vec![
+                            &env,
+                            sender.into_val(&env),
+                            u64::from(delivery_id).into_val(&env),
+                        ],
+                    );
+                    refund_amount = escrow.amount;
+                }
+                Some(reason) => {
+                    env.events().publish(
+                        (Symbol::new(&env, "cancel_escrow_skipped"),),
+                        (delivery_id, Symbol::new(&env, reason)),
+                    );
+                }
+            }
         }
 
         delivery.status = DeliveryStatus::Cancelled;
@@ -834,7 +933,9 @@ impl DeliveryContract {
     /// package for a delivery that has no escrow at all, or one whose escrow
     /// was already refunded (e.g. by `reclaim_expired_escrow`, which does not
     /// touch the delivery). A missing escrow surfaces as the escrow
-    /// contract's `DeliveryNotFound`; a present-but-not-`Locked` escrow
+    /// contract's `DeliveryNotFound`; an escrow whose delivery ID, sender,
+    /// recipient or driver differs from this delivery yields
+    /// `DeliveryError::EscrowMismatch`; a matching but not-`Locked` escrow
     /// yields the typed `DeliveryError::EscrowNotLocked`. This adds one
     /// cross-contract call to a hot path, which is a deliberate trade-off:
     /// the driver's assurance that funds exist is worth the extra read.
@@ -882,6 +983,13 @@ impl DeliveryContract {
             &Symbol::new(&env, "get_escrow"),
             soroban_sdk::vec![&env, u64::from(delivery_id).into_val(&env)],
         );
+        // The escrow must fund *this* delivery: same ID, sender, recipient
+        // and assigned driver. A Locked escrow for different parties would
+        // otherwise satisfy the funded precondition while paying, or
+        // refunding, the wrong actor.
+        if !escrow_matches_delivery(delivery_id, &delivery, &escrow) {
+            panic_with_error!(&env, DeliveryError::EscrowMismatch);
+        }
         if escrow.status != shared_types::EscrowStatus::Locked {
             panic_with_error!(&env, DeliveryError::EscrowNotLocked);
         }
