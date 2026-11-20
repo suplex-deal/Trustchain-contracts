@@ -26,6 +26,13 @@ pub mod constants {
     pub const DEFAULT_ESCROW_EXPIRY_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 days
     pub const MAX_PLATFORM_FEE_BPS: u32 = 1000;
     pub const MAX_SLIPPAGE_TOLERANCE_BPS: u32 = 1000;
+    /// Documented upper bound of the per-sender settlement counter
+    /// (`get_sender_volume`). Once a sender reaches this value further
+    /// settlements still succeed — blocking them would trap escrowed funds —
+    /// but the counter stays pinned at the cap and every such settlement
+    /// publishes a `sender_volume_capped` event so the boundary is observable
+    /// on-chain instead of the count silently stopping.
+    pub const MAX_SENDER_VOLUME: u32 = u32::MAX;
     pub const SETTLEMENT_CONTRACT_TIMELOCK_SECONDS: u64 = 3 * 24 * 60 * 60; // 3 days
     /// Default time a recipient has, after confirming delivery (i.e. after
     /// `mark_holdback_escrow` moves an escrow into `Holdback`), to either
@@ -170,8 +177,108 @@ fn apply_freeze_funds(env: &Env, actor: &Address, delivery_id: u64) {
     }
 }
 
-fn calculate_fee(amount: i128, platform_fee_bps: u32) -> i128 {
-    amount.saturating_mul(platform_fee_bps as i128) / 10_000
+/// Basis-point denominator: 10_000 bps == 100%.
+const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Overflow-safe `floor(amount * bps / 10_000)`.
+///
+/// The naive `amount * bps` product overflows `i128` for amounts above
+/// `i128::MAX / bps`; the previous `saturating_mul` implementation silently
+/// clamped that product, so very large escrows were charged (or split by) a
+/// value that no longer equalled `amount * bps / 10_000`. This splits
+/// `amount` into quotient and remainder of the denominator instead:
+///
+/// ```text
+/// amount = q * 10_000 + r          (0 <= r < 10_000)
+/// floor(amount * bps / 10_000) = q * bps + floor(r * bps / 10_000)
+/// ```
+///
+/// which is exact for every non-negative `amount` and never forms a product
+/// larger than `amount` when `bps <= 10_000`.
+///
+/// Returns `None` for unsupported inputs — a negative `amount`, a `bps`
+/// above 100%, or (defensively) any intermediate overflow — so callers can
+/// reject them instead of acting on a distorted value.
+fn checked_bps_share(amount: i128, bps: u32) -> Option<i128> {
+    if amount < 0 || bps as i128 > BPS_DENOMINATOR {
+        return None;
+    }
+    let bps = bps as i128;
+    let whole = (amount / BPS_DENOMINATOR).checked_mul(bps)?;
+    let partial = (amount % BPS_DENOMINATOR).checked_mul(bps)? / BPS_DENOMINATOR;
+    whole.checked_add(partial)
+}
+
+/// Platform fee owed on `amount` at `platform_fee_bps`.
+///
+/// Aborts the transaction with `EscrowError::ArithmeticOverflow` when the fee
+/// cannot be represented exactly (see `checked_bps_share`).
+fn calculate_fee(env: &Env, amount: i128, platform_fee_bps: u32) -> i128 {
+    checked_bps_share(amount, platform_fee_bps)
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::ArithmeticOverflow))
+}
+
+/// Topic of the event published when a settlement is not counted because
+/// the sender's volume is already at `constants::MAX_SENDER_VOLUME`.
+pub const SENDER_VOLUME_CAPPED: &str = "sender_volume_capped";
+
+/// Payload of the `sender_volume_capped` event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SenderVolumeCapped {
+    pub sender: Address,
+    pub volume: u32,
+}
+
+/// Records one settlement against `sender`'s volume counter, given the
+/// `current` value the caller already read (and used for fee selection).
+///
+/// Increments by one up to `constants::MAX_SENDER_VOLUME`. At the cap the
+/// stored value is left unchanged and a `sender_volume_capped` event is
+/// published, making the boundary explicit rather than silently dropping the
+/// settlement from the count. The entry's TTL is extended on every call
+/// (Issue #460) so an active sender's accrued discount cannot expire.
+#[allow(deprecated)] // events().publish() is deprecated in SDK 27.0.0 but still functional; tracked in SOROBAN_SDK_27_MIGRATION.md#event-system-migration (Issue #114)
+fn record_sender_settlement(env: &Env, sender: &Address, current: u32) {
+    let next = if current < constants::MAX_SENDER_VOLUME {
+        current + 1
+    } else {
+        env.events().publish(
+            (Symbol::new(env, SENDER_VOLUME_CAPPED),),
+            SenderVolumeCapped {
+                sender: sender.clone(),
+                volume: current,
+            },
+        );
+        current
+    };
+    let key = DataKey::SenderVolume(sender.clone());
+    env.storage().persistent().set(&key, &next);
+    env.storage().persistent().extend_ttl(
+        &key,
+        ttl::LEDGER_TTL_THRESHOLD,
+        ttl::LEDGER_TTL_EXTEND_TO,
+    );
+}
+
+/// Reads the `TotalLocked` accumulator for `token` and returns it increased by
+/// `amount`, aborting with `EscrowError::ArithmeticOverflow` if the sum does
+/// not fit in `i128`.
+///
+/// `TotalLocked` is what `sweep_untracked_balance` subtracts from the contract
+/// balance to decide what is surplus. A saturating add would let the counter
+/// stop growing while deposits continue, so every locked deposit must either
+/// be counted exactly or rejected. Callers run this *before* pulling funds
+/// from the sender and only persist the result once the deposit is accepted.
+fn checked_locked_total(env: &Env, token: &Address, amount: i128) -> i128 {
+    let current_total: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalLocked(token.clone()))
+        .unwrap_or(0);
+    current_total
+        .checked_add(amount)
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::ArithmeticOverflow))
 }
 
 /// Validates a volume tier list before it is written to storage.
@@ -495,21 +602,12 @@ fn settle_holdback_escrow(env: &Env, delivery_id: u64, mut record: EscrowRecord)
 
     let sender_volume = EscrowContract::get_sender_volume(env.clone(), record.sender.clone());
     let effective_fee_bps = get_effective_fee_bps(env, base_fee_bps, sender_volume);
-    let platform_fee = calculate_fee(record.amount, effective_fee_bps);
+    let platform_fee = calculate_fee(env, record.amount, effective_fee_bps);
     let driver_amount = record.amount.saturating_sub(platform_fee);
 
-    let sender_volume_key = DataKey::SenderVolume(record.sender.clone());
-    env.storage()
-        .persistent()
-        .set(&sender_volume_key, &sender_volume.saturating_add(1));
-    // Issue #460: the sender volume drives the volume-tier fee discount, so a
-    // silently expired entry would wipe an active sender's accrued discount.
-    // Every write must therefore extend the entry's TTL.
-    env.storage().persistent().extend_ttl(
-        &sender_volume_key,
-        ttl::LEDGER_TTL_THRESHOLD,
-        ttl::LEDGER_TTL_EXTEND_TO,
-    );
+    // Issue #460 TTL extension and the MAX_SENDER_VOLUME cap are handled
+    // by the shared helper.
+    record_sender_settlement(env, &record.sender, sender_volume);
 
     // Effects (state) are committed before the interaction (transfer)
     // below, per checks-effects-interactions.
@@ -632,6 +730,10 @@ pub enum EscrowError {
     /// A batch operation (`create_escrows_batch`) exceeded `MAX_BATCH_SIZE`.
     BatchTooLarge = 12,
     InvalidSlippageTolerance = 13,
+    /// An escrow amount computation could not be represented exactly in
+    /// `i128` (fee / basis-point share, or the `TotalLocked` accumulator).
+    /// The transaction is aborted rather than acting on a saturated value.
+    ArithmeticOverflow = 14,
 }
 
 #[contracttype]
@@ -1196,6 +1298,10 @@ impl EscrowContract {
             None
         };
 
+        // Reject a deposit that would overflow the TotalLocked accumulator
+        // before any funds move.
+        let new_total_locked = checked_locked_total(&env, &token, amount);
+
         token::Client::new(&env, &token).transfer(&sender, env.current_contract_address(), &amount);
         let record_token_clone = token.clone();
         let created_at = env.ledger().timestamp();
@@ -1278,16 +1384,10 @@ impl EscrowContract {
         );
         */
 
-        let token_for_tracking = record_token_clone.clone();
-        let total_locked_key = DataKey::TotalLocked(token_for_tracking.clone());
-        let current_total: i128 = env
-            .storage()
-            .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&total_locked_key, &current_total.saturating_add(amount));
+        env.storage().persistent().set(
+            &DataKey::TotalLocked(record_token_clone.clone()),
+            &new_total_locked,
+        );
 
         env.events().publish(
             (events::escrow_funded(&env),),
@@ -1348,7 +1448,10 @@ impl EscrowContract {
         */
 
         let mut count = 0u32;
-        let mut batch_total: i128 = 0;
+        // Running TotalLocked including every escrow accepted so far in this
+        // batch. Checked before each transfer so an overflowing element aborts
+        // the whole batch instead of being silently left uncounted.
+        let mut new_total_locked: i128 = checked_locked_total(&env, &token, 0);
         for i in 0..escrow_list.len() {
             if let Some((delivery_id, driver, amount, fleet_id)) = escrow_list.get(i) {
                 if driver == sender || driver == recipient {
@@ -1388,12 +1491,15 @@ impl EscrowContract {
                         None
                     };
 
+                new_total_locked = new_total_locked
+                    .checked_add(amount)
+                    .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ArithmeticOverflow));
+
                 token::Client::new(&env, &token).transfer(
                     &sender,
                     env.current_contract_address(),
                     &amount,
                 );
-                batch_total = batch_total.saturating_add(amount);
                 let created_at = env.ledger().timestamp();
                 let expires_at =
                     created_at.saturating_add(constants::DEFAULT_ESCROW_EXPIRY_SECONDS);
@@ -1498,18 +1604,11 @@ impl EscrowContract {
         // batch-created escrows must count toward TotalLocked exactly like
         // single-escrow creates, otherwise sweep_untracked_balance would treat
         // the batch funds as untracked surplus and drain them. A batch shares
-        // one token, so accumulate in the loop and do a single read-modify-
-        // write here instead of one storage round-trip per element.
-        let total_locked_key = DataKey::TotalLocked(token.clone());
-        let current_total: i128 = env
-            .storage()
+        // one token, so accumulate (with overflow checks) in the loop and do a
+        // single write here instead of one storage round-trip per element.
+        env.storage()
             .persistent()
-            .get(&total_locked_key)
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &total_locked_key,
-            &current_total.saturating_add(batch_total),
-        );
+            .set(&DataKey::TotalLocked(token.clone()), &new_total_locked);
 
         count
     }
@@ -1570,20 +1669,12 @@ impl EscrowContract {
 
         let sender_volume = Self::get_sender_volume(env.clone(), record.sender.clone());
         let effective_fee_bps = get_effective_fee_bps(&env, base_fee_bps, sender_volume);
-        let platform_fee = calculate_fee(record.amount, effective_fee_bps);
+        let platform_fee = calculate_fee(&env, record.amount, effective_fee_bps);
         let driver_amount = record.amount.saturating_sub(platform_fee);
 
-        let sender_volume_key = DataKey::SenderVolume(record.sender.clone());
-        env.storage()
-            .persistent()
-            .set(&sender_volume_key, &sender_volume.saturating_add(1));
-        // Issue #460: extend the volume entry's TTL so an active sender's
-        // accrued tier discount cannot silently expire.
-        env.storage().persistent().extend_ttl(
-            &sender_volume_key,
-            ttl::LEDGER_TTL_THRESHOLD,
-            ttl::LEDGER_TTL_EXTEND_TO,
-        );
+        // Issue #460 TTL extension and the MAX_SENDER_VOLUME cap are handled
+        // by the shared helper.
+        record_sender_settlement(&env, &record.sender, sender_volume);
 
         // Effects (state) are committed before the interaction (transfer)
         // below, per checks-effects-interactions.
@@ -1850,20 +1941,12 @@ impl EscrowContract {
                 .unwrap_or(0);
             let sender_volume = Self::get_sender_volume(env.clone(), record.sender.clone());
             let effective_fee_bps = get_effective_fee_bps(&env, base_fee_bps, sender_volume);
-            let platform_fee = calculate_fee(record.amount, effective_fee_bps);
+            let platform_fee = calculate_fee(&env, record.amount, effective_fee_bps);
             let driver_amount = record.amount.saturating_sub(platform_fee);
 
-            let sender_volume_key = DataKey::SenderVolume(record.sender.clone());
-            env.storage()
-                .persistent()
-                .set(&sender_volume_key, &sender_volume.saturating_add(1));
-            // Issue #460: extend the volume entry's TTL so an active sender's
-            // accrued tier discount cannot silently expire.
-            env.storage().persistent().extend_ttl(
-                &sender_volume_key,
-                ttl::LEDGER_TTL_THRESHOLD,
-                ttl::LEDGER_TTL_EXTEND_TO,
-            );
+            // Issue #460 TTL extension and the MAX_SENDER_VOLUME cap are handled
+            // by the shared helper.
+            record_sender_settlement(&env, &record.sender, sender_volume);
 
             record.status = EscrowStatus::Released;
             Some((
@@ -1940,8 +2023,14 @@ impl EscrowContract {
             panic_with_error!(&env, TrustchainError::InsufficientFunds);
         }
 
-        let sender_amount = record.amount.saturating_mul(sender_share_bps as i128) / 10000;
-        let driver_share_amount = record.amount.saturating_sub(sender_amount);
+        // Overflow-safe basis-point share: `record.amount * sender_share_bps`
+        // overflows i128 for high-value escrows, and the previous
+        // saturating_mul silently distorted the split. sender_share_bps is
+        // already bounded to 0..=10000 above, so 0 <= sender_amount <=
+        // record.amount and the driver share below cannot underflow.
+        let sender_amount = checked_bps_share(record.amount, sender_share_bps)
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ArithmeticOverflow));
+        let driver_share_amount = record.amount - sender_amount;
 
         let base_fee_bps: u32 = env
             .storage()
@@ -1951,20 +2040,12 @@ impl EscrowContract {
             .unwrap_or(0);
         let sender_volume = Self::get_sender_volume(env.clone(), record.sender.clone());
         let effective_fee_bps = get_effective_fee_bps(&env, base_fee_bps, sender_volume);
-        let platform_fee = calculate_fee(driver_share_amount, effective_fee_bps);
+        let platform_fee = calculate_fee(&env, driver_share_amount, effective_fee_bps);
         let net_driver_amount = driver_share_amount.saturating_sub(platform_fee);
 
-        let sender_volume_key = DataKey::SenderVolume(record.sender.clone());
-        env.storage()
-            .persistent()
-            .set(&sender_volume_key, &sender_volume.saturating_add(1));
-        // Issue #460: extend the volume entry's TTL so an active sender's
-        // accrued tier discount cannot silently expire.
-        env.storage().persistent().extend_ttl(
-            &sender_volume_key,
-            ttl::LEDGER_TTL_THRESHOLD,
-            ttl::LEDGER_TTL_EXTEND_TO,
-        );
+        // Issue #460 TTL extension and the MAX_SENDER_VOLUME cap are handled
+        // by the shared helper.
+        record_sender_settlement(&env, &record.sender, sender_volume);
 
         // Effects (state) are committed before the interactions (transfers)
         // below, per checks-effects-interactions.

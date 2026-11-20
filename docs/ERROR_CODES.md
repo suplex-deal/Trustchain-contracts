@@ -48,6 +48,8 @@ they are not reserved for anything and should not be inferred to mean "no error.
 | 10 | `InvalidDriver` | Driver address matches the sender or recipient, which is not permitted for escrow creation. |
 | 11 | `InvalidParties` | Sender and recipient are the same address. |
 | 12 | `BatchTooLarge` | `create_escrows_batch` list exceeds `MAX_BATCH_SIZE` (100). |
+| 13 | `InvalidSlippageTolerance` | Requested slippage tolerance exceeds `MAX_SLIPPAGE_TOLERANCE_BPS`. |
+| 14 | `ArithmeticOverflow` | An amount computation (platform fee, dispute-split share, or `TotalLocked` accumulator) cannot be represented exactly in `i128`; the transaction is aborted instead of using a saturated value. |
 
 Shared failures such as `InvalidState`, `DeliveryNotFound`, `InsufficientFunds`,
 `DuplicateDelivery`, `TimelockNotElapsed`, `Unauthorized`, `NotInitialized`, and

@@ -475,6 +475,8 @@ Lock funds for a delivery.
 **Errors:**
 - `DuplicateDelivery` - Escrow already exists for this delivery_id
 - `InsufficientFunds` - Sender balance too low
+- `ArithmeticOverflow` - Adding `amount` to `get_total_locked(token)` would exceed
+  `i128::MAX`; the deposit is rejected before any funds are transferred
 
 **Events:** `escrow_funded`
 
@@ -673,6 +675,13 @@ and receive approval from two distinct mediators.
 - `Unauthorized` - Caller not admin
 - `InvalidState` - Escrow not in Paused state
 - `InvalidFee` - sender_share_bps > 10000
+- `ArithmeticOverflow` - Defensive: the basis-point share could not be computed
+  exactly (not reachable for a valid, non-negative escrow amount)
+
+The sender share is `floor(amount * sender_share_bps / 10000)`, computed without
+forming the full product, so it is exact for every escrow amount up to
+`i128::MAX`. The driver receives `amount - sender_share` minus the platform fee;
+the three legs always sum to the escrowed amount.
 
 **Events:** `dispute_resolved`
 
@@ -945,6 +954,12 @@ Returns the sender's payout count, incremented each time a payout is executed
 for the sender, used to select the applicable volume-discount tier. Returns `0`
 for a sender with no payouts yet.
 
+The counter is capped at `constants::MAX_SENDER_VOLUME` (`u32::MAX`). Payouts
+for a sender already at the cap still settle normally, but the count stays at
+the cap and each such payout publishes a `sender_volume_capped` event
+(`SenderVolumeCapped { sender, volume }`) so the boundary is visible to
+indexers instead of the counter silently stopping.
+
 **Parameters:**
 - `sender: Address` - Sender address
 
@@ -1003,6 +1018,8 @@ the same token and amount validation as `create_escrow`.
 - `InvalidAmount` - Any element's amount is not positive
 - `DuplicateDelivery` - Escrow already exists for any delivery_id
 - `BatchTooLarge` - Batch size exceeds 100
+- `ArithmeticOverflow` - The running `TotalLocked` (existing total plus the batch
+  elements so far) would exceed `i128::MAX`; the entire batch is aborted
 
 **Events:** `escrow_funded` (once per escrow)
 
