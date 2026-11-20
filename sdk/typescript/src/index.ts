@@ -19,7 +19,6 @@ export {
   vec,
 } from './clients/invoker';
 export type { ScVal, Signer } from './clients/invoker';
-export type { PaginationOptions } from './clients/index';
 export * from './types/escrow.types';
 export * from './types/delivery.types';
 export * from './types/dispute_resolution.types';

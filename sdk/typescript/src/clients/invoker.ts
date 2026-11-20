@@ -23,7 +23,14 @@ export function u64(value: bigint | number): ScVal {
   return nativeToScVal(BigInt(value), { type: 'u64' });
 }
 
+const U32_MAX = 0xffffffff;
+
 export function u32(value: number): ScVal {
+  if (!Number.isInteger(value) || value < 0 || value > U32_MAX) {
+    throw new RangeError(
+      `u32 value out of range: ${value} (must be an integer in [0, ${U32_MAX}])`
+    );
+  }
   return nativeToScVal(value, { type: 'u32' });
 }
 

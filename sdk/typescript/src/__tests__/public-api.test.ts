@@ -26,9 +26,7 @@ describe('SDK package entry point', () => {
       ttlThresholdLedgers: 50_000,
       ttlExtendToLedgers: 200_000,
     };
-    const pagination: sdk.PaginationOptions = { offset: 0, limit: 10 };
 
     expect(options.timeoutSeconds).toBe(20);
-    expect(pagination.limit).toBe(10);
   });
 });
