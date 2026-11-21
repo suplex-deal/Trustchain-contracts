@@ -630,8 +630,8 @@ pub struct DriverReinstatedEvent {
 pub struct DriverPreferenceUpdatedEvent {
     /// Driver address whose preference was updated.
     pub driver: Address,
-    /// New target token address for payouts.
-    pub target_token: Address,
+    /// New target token address for payouts. None when cleared.
+    pub target_token: Option<Address>,
     /// Ledger timestamp of the update.
     pub timestamp: u64,
 }

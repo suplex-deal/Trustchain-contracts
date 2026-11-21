@@ -194,7 +194,7 @@ impl SettlementContract {
             (shared_types::events::driver_preference_updated(&env),),
             DriverPreferenceUpdatedEvent {
                 driver: driver_clone,
-                target_token: to_token,
+                target_token: Some(to_token),
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -215,8 +215,8 @@ impl SettlementContract {
         env.events().publish(
             (shared_types::events::driver_preference_updated(&env),),
             DriverPreferenceUpdatedEvent {
-                driver: driver_clone.clone(),
-                target_token: driver_clone, // cleared → default routing
+                driver: driver_clone,
+                target_token: None,
                 timestamp: env.ledger().timestamp(),
             },
         );

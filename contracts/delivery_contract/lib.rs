@@ -170,7 +170,7 @@ pub fn validate_transition(from: DeliveryStatus, to: DeliveryStatus) -> Result<(
 }
 
 fn validate_delivery_metadata(
-    _env: &Env,
+    env: &Env,
     metadata: &DeliveryMetadata,
 ) -> Result<(), DeliveryError> {
     if metadata.origin.len() < constants::MIN_LOCATION_LEN
@@ -189,6 +189,13 @@ fn validate_delivery_metadata(
     if !metadata.cargo_description.has_valid_weight() {
         return Err(DeliveryError::InvalidMetadata);
     }
+
+    // Issue #130: validate estimated_delivery is in the future relative to ledger time
+    let now = env.ledger().timestamp();
+    if metadata.estimated_delivery <= now {
+        return Err(DeliveryError::InvalidMetadata);
+    }
+
     Ok(())
 }
 
@@ -468,6 +475,8 @@ impl DeliveryContract {
         // DeliveryMetadata struct.
         let mut metadata = metadata;
         metadata.delivery_id = counter;
+        // Issue #130: overwrite created_at with ledger timestamp
+        metadata.created_at = env.ledger().timestamp();
 
         let record = DeliveryRecord {
             delivery_id,
@@ -572,6 +581,8 @@ impl DeliveryContract {
                 // See create_delivery: overwrite with the real generated ID
                 // rather than trusting the caller-supplied value (Issue #45).
                 metadata.delivery_id = counter;
+                // Issue #130: overwrite created_at with ledger timestamp
+                metadata.created_at = timestamp;
 
                 let record = DeliveryRecord {
                     delivery_id,
@@ -632,7 +643,8 @@ impl DeliveryContract {
             panic_with_error!(&env, TrustchainError::Unauthorized);
         }
 
-        if delivery.status != DeliveryStatus::Pending && delivery.status != DeliveryStatus::Active {
+        // Issue #128: restrict metadata edits to Pending only
+        if delivery.status != DeliveryStatus::Pending {
             panic_with_error!(&env, TrustchainError::InvalidState);
         }
 
@@ -860,10 +872,27 @@ impl DeliveryContract {
             let is_suspended: bool = env.invoke_contract(
                 &identity_contract,
                 &Symbol::new(&env, "is_driver_suspended"),
-                soroban_sdk::vec![&env, driver.into_val(&env)],
+                soroban_sdk::vec![&env, driver.clone().into_val(&env)],
             );
             if is_suspended {
                 panic_with_error!(&env, TrustchainError::Unauthorized);
+            }
+
+            // Issue #129: recheck KYC at transit when policy requires it
+            let require_kyc: bool = env
+                .storage()
+                .instance()
+                .get(&DataKey::RequireKyc)
+                .unwrap_or(false);
+            if require_kyc {
+                let profile: DriverProfile = env.invoke_contract(
+                    &identity_contract,
+                    &Symbol::new(&env, "get_driver_profile"),
+                    soroban_sdk::vec![&env, driver.clone().into_val(&env)],
+                );
+                if !profile.kyc_verified {
+                    panic_with_error!(&env, TrustchainError::Unauthorized);
+                }
             }
         }
 
