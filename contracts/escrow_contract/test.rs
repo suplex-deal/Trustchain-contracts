@@ -763,7 +763,8 @@ fn test_resolve_dispute_refund_with_insufficient_funds() {
     mint(&env, &token, &sender, 200);
     client.create_escrow(&sender, &recipient, &driver, &11u64, &token, &200, &None);
 
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &11u64);
+    let dispute_11 = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute_11, &11u64);
 
     env.as_contract(&contract_id, || {
         let mut record: EscrowRecord = env
@@ -777,7 +778,7 @@ fn test_resolve_dispute_refund_with_insufficient_funds() {
             .set(&shared_types::escrow_key(11u64), &record);
     });
 
-    let result = client.try_resolve_dispute(&admin, &11u64, &false);
+    let result = client.try_resolve_dispute(&dispute_11, &11u64, &false);
     match result {
         Err(Ok(err)) => assert_eq!(err, TrustchainError::InsufficientFunds.into()),
         _ => panic!("Expected TrustchainError::InsufficientFunds"),
@@ -1314,10 +1315,11 @@ fn test_total_locked_decreases_on_dispute_resolve() {
     client.create_escrow(&sender, &recipient, &driver, &304u64, &token, &1000, &None);
     assert_eq!(client.get_total_locked(&token), 1000);
 
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &304u64);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &304u64);
     assert_eq!(client.get_total_locked(&token), 1000);
 
-    client.resolve_dispute(&admin, &304u64, &false);
+    client.resolve_dispute(&dispute, &304u64, &false);
     assert_eq!(client.get_total_locked(&token), 0);
 }
 
@@ -1339,8 +1341,9 @@ fn test_total_locked_decreases_on_dispute_split() {
     client.create_escrow(&sender, &recipient, &driver, &305u64, &token, &1000, &None);
     assert_eq!(client.get_total_locked(&token), 1000);
 
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &305u64);
-    client.resolve_dispute_split(&admin, &305u64, &5000);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &305u64);
+    client.resolve_dispute_split(&dispute, &305u64, &5000);
     assert_eq!(client.get_total_locked(&token), 0);
 }
 
@@ -1842,7 +1845,7 @@ fn test_resolve_dispute_release_emits_escrow_released_event() {
 
     client.create_escrow(&sender, &recipient, &driver, &301u64, &token, &1000, &None);
     client.freeze_funds(&dispute_contract, &301u64);
-    client.resolve_dispute(&admin, &301u64, &false);
+    client.resolve_dispute(&dispute_contract, &301u64, &false);
 
     assert_eq!(balance(&env, &token, &sender), 1000);
     assert_eq!(balance(&env, &token, &contract_id), 0);
@@ -1866,9 +1869,10 @@ fn test_resolve_dispute_split_50_50() {
     mint(&env, &token, &sender, 1000);
 
     client.create_escrow(&sender, &recipient, &driver, &400u64, &token, &1000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &400u64);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &400u64);
 
-    client.resolve_dispute(&admin, &400u64, &true);
+    client.resolve_dispute(&dispute, &400u64, &true);
 
     let record = client.get_escrow(&400u64);
     assert_eq!(record.status, EscrowStatus::Released);
@@ -1892,9 +1896,10 @@ fn test_resolve_dispute_refund_emits_escrow_refunded_event() {
     mint(&env, &token, &sender, 1000);
 
     client.create_escrow(&sender, &recipient, &driver, &401u64, &token, &1000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &401u64);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &401u64);
 
-    client.resolve_dispute(&admin, &401u64, &false);
+    client.resolve_dispute(&dispute, &401u64, &false);
 
     let record = client.get_escrow(&401u64);
     assert_eq!(record.status, EscrowStatus::Refunded);
@@ -1920,7 +1925,7 @@ fn test_resolve_dispute_split_emits_event_with_both_amounts() {
 
     client.create_escrow(&sender, &recipient, &driver, &302u64, &token, &1000, &None);
     client.freeze_funds(&dispute_contract, &302u64);
-    client.resolve_dispute_split(&admin, &302u64, &5000); // 50% sender, 50% driver
+    client.resolve_dispute_split(&dispute_contract, &302u64, &5000); // 50% sender, 50% driver
 
     assert_eq!(balance(&env, &token, &sender), 500);
     assert_eq!(balance(&env, &token, &driver), 500);
@@ -1944,9 +1949,10 @@ fn test_resolve_dispute_split_0_100() {
     mint(&env, &token, &sender, 1000);
 
     client.create_escrow(&sender, &recipient, &driver, &402u64, &token, &1000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &402u64);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &402u64);
 
-    client.resolve_dispute_split(&admin, &402u64, &5000);
+    client.resolve_dispute_split(&dispute, &402u64, &5000);
 
     let record = client.get_escrow(&402u64);
     assert_eq!(record.status, EscrowStatus::Split);
@@ -1973,7 +1979,7 @@ fn test_resolve_dispute_emits_driver_and_amount_in_event() {
 
     client.create_escrow(&sender, &recipient, &driver, &303u64, &token, &1000, &None);
     client.freeze_funds(&dispute_contract, &303u64);
-    client.resolve_dispute_split(&admin, &303u64, &0); // 0% sender, 100% driver
+    client.resolve_dispute_split(&dispute_contract, &303u64, &0); // 0% sender, 100% driver
 
     assert_eq!(balance(&env, &token, &sender), 0);
     assert_eq!(balance(&env, &token, &driver), 1000);
@@ -1998,9 +2004,10 @@ fn test_resolve_dispute_split_100_0() {
     mint(&env, &token, &sender, 1000);
 
     client.create_escrow(&sender, &recipient, &driver, &403u64, &token, &1000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &403u64);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &403u64);
 
-    client.resolve_dispute(&admin, &403u64, &true);
+    client.resolve_dispute(&dispute, &403u64, &true);
 
     let record = client.get_escrow(&403u64);
     assert_eq!(record.driver, driver);
@@ -2216,7 +2223,7 @@ fn test_resolve_dispute_rejects_reentrancy_via_fleet_get_payout_address() {
     client.set_fleet_management_contract(&admin, &fleet);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.resolve_dispute(&admin, &902u64, &true);
+        client.resolve_dispute(&dispute_contract, &902u64, &true);
     }));
     assert!(result.is_err());
 
@@ -2527,8 +2534,9 @@ fn test_resolve_dispute_release_to_driver_applies_volume_discount() {
     assert_eq!(balance(&env, &token, &admin), 10);
 
     client.create_escrow(&sender, &recipient, &driver, &516u64, &token, &1000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &516u64);
-    client.resolve_dispute(&admin, &516u64, &true);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &516u64);
+    client.resolve_dispute(&dispute, &516u64, &true);
 
     assert_eq!(balance(&env, &token, &driver), 990 + 994); // 1000 - 6 discounted fee
     assert_eq!(balance(&env, &token, &admin), 10 + 6);
@@ -2804,7 +2812,7 @@ fn test_resolve_dispute_split_full_sender_share() {
 
     client.create_escrow(&sender, &recipient, &driver, &304u64, &token, &1000, &None);
     client.freeze_funds(&dispute_contract, &304u64);
-    client.resolve_dispute_split(&admin, &304u64, &10000); // 100% sender, 0% driver
+    client.resolve_dispute_split(&dispute_contract, &304u64, &10000); // 100% sender, 0% driver
 
     assert_eq!(balance(&env, &token, &sender), 1000);
     assert_eq!(balance(&env, &token, &driver), 0);
@@ -2902,8 +2910,9 @@ fn test_resolve_dispute_updates_state_before_release_transfer() {
     mint(&env, &token, &sender, 2000);
 
     client.create_escrow(&sender, &recipient, &driver, &502u64, &token, &2000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &502u64);
-    client.resolve_dispute(&admin, &502u64, &true);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &502u64);
+    client.resolve_dispute(&dispute, &502u64, &true);
 
     let record = client.get_escrow(&502u64);
     assert_eq!(record.status, EscrowStatus::Released);
@@ -2976,8 +2985,9 @@ fn test_resolve_dispute_refund_sets_refunded_status() {
     mint(&env, &token, &sender, 2000);
 
     client.create_escrow(&sender, &recipient, &driver, &503u64, &token, &2000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &503u64);
-    client.resolve_dispute(&admin, &503u64, &false);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &503u64);
+    client.resolve_dispute(&dispute, &503u64, &false);
 
     let record = client.get_escrow(&503u64);
     assert_eq!(record.status, EscrowStatus::Refunded);
@@ -3000,8 +3010,9 @@ fn test_resolve_dispute_split_updates_state_before_transfer() {
     mint(&env, &token, &sender, 2000);
 
     client.create_escrow(&sender, &recipient, &driver, &504u64, &token, &2000, &None);
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &504u64);
-    client.resolve_dispute_split(&admin, &504u64, &3000);
+    let dispute = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute, &504u64);
+    client.resolve_dispute_split(&dispute, &504u64, &3000);
 
     let record = client.get_escrow(&504u64);
     assert_eq!(record.status, EscrowStatus::Split);
@@ -4150,7 +4161,7 @@ fn test_holdback_escrow_can_be_frozen_and_refunded_through_dispute() {
         _ => panic!("Expected TrustchainError::Unauthorized"),
     }
 
-    client.resolve_dispute(&admin, &924u64, &false);
+    client.resolve_dispute(&dispute_contract, &924u64, &false);
     assert_eq!(client.get_escrow(&924u64).status, EscrowStatus::Refunded);
     assert_eq!(balance(&env, &token, &sender), 500);
     assert_eq!(client.get_total_locked(&token), 0);
@@ -4264,7 +4275,8 @@ fn test_resolve_dispute_release_with_insufficient_funds() {
     mint(&env, &token, &sender, 200);
     client.create_escrow(&sender, &recipient, &driver, &194u64, &token, &200, &None);
 
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &194u64);
+    let dispute_194 = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute_194, &194u64);
 
     // Inflate record.amount to exceed the real contract balance so the guard fires.
     env.as_contract(&contract_id, || {
@@ -4279,7 +4291,7 @@ fn test_resolve_dispute_release_with_insufficient_funds() {
             .set(&shared_types::escrow_key(194u64), &record);
     });
 
-    let result = client.try_resolve_dispute(&admin, &194u64, &true);
+    let result = client.try_resolve_dispute(&dispute_194, &194u64, &true);
     match result {
         Err(Ok(err)) => assert_eq!(err, TrustchainError::InsufficientFunds.into()),
         _ => panic!("Expected TrustchainError::InsufficientFunds"),
@@ -4307,8 +4319,9 @@ fn test_resolve_dispute_release_fully_funded_succeeds() {
     mint(&env, &token, &sender, 1000);
     client.create_escrow(&sender, &recipient, &driver, &195u64, &token, &1000, &None);
 
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &195u64);
-    client.resolve_dispute(&admin, &195u64, &true);
+    let dispute_195 = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute_195, &195u64);
+    client.resolve_dispute(&dispute_195, &195u64, &true);
 
     assert_eq!(client.get_escrow(&195u64).status, EscrowStatus::Released);
     assert_eq!(balance(&env, &token, &driver), 950);
@@ -4490,7 +4503,7 @@ fn test_raise_dispute_rejects_terminal_states() {
     mint(&env, &token, &sender, 500);
     client.create_escrow(&sender, &recipient, &driver, &937u64, &token, &500, &None);
     client.raise_dispute(&dispute, &937u64);
-    client.resolve_dispute_split(&admin, &937u64, &5000);
+    client.resolve_dispute_split(&dispute, &937u64, &5000);
     let result = client.try_raise_dispute(&dispute, &937u64);
     match result {
         Err(Ok(err)) => assert_eq!(err, TrustchainError::InvalidState.into()),
@@ -5687,7 +5700,7 @@ fn test_freeze_funds_rejects_split_escrow() {
     client.create_escrow(&sender, &recipient, &driver, &2942u64, &token, &1000, &None);
     // Pause then split → terminal state Split
     client.freeze_funds(&dispute_contract, &2942u64);
-    client.resolve_dispute_split(&admin, &2942u64, &5000u32);
+    client.resolve_dispute_split(&dispute_contract, &2942u64, &5000u32);
     assert_eq!(client.get_escrow(&2942u64).status, EscrowStatus::Split);
 
     let result = client.try_freeze_funds(&dispute_contract, &2942u64);
@@ -7107,8 +7120,9 @@ fn test_sender_volume_ttl_extended_on_resolve_dispute_release_to_driver() {
     client.create_escrow(
         &sender, &recipient, &driver, &10302u64, &token, &1000, &None,
     );
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &10302u64);
-    client.resolve_dispute(&admin, &10302u64, &true);
+    let dispute_10302 = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute_10302, &10302u64);
+    client.resolve_dispute(&dispute_10302, &10302u64, &true);
 
     assert_eq!(client.get_sender_volume(&sender), 1u32);
     assert_eq!(
@@ -7134,8 +7148,9 @@ fn test_sender_volume_ttl_extended_on_resolve_dispute_split() {
     client.create_escrow(
         &sender, &recipient, &driver, &10303u64, &token, &1000, &None,
     );
-    client.raise_dispute(&new_dispute_contract(&env, &client, &admin), &10303u64);
-    client.resolve_dispute_split(&admin, &10303u64, &5000u32);
+    let dispute_10303 = new_dispute_contract(&env, &client, &admin);
+    client.raise_dispute(&dispute_10303, &10303u64);
+    client.resolve_dispute_split(&dispute_10303, &10303u64, &5000u32);
 
     assert_eq!(client.get_sender_volume(&sender), 1u32);
     assert_eq!(

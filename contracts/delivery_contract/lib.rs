@@ -142,10 +142,13 @@ mod constants {
 ///               reclaim_delivery_expired_escrow can synchronise an in-transit
 ///               delivery whose escrow expired)
 ///   Delivered → Disputed
+///   Delivered → Cancelled  (Issue #110: admin holdback-refund recovery path that
+///               synchronises a Delivered delivery whose Holdback escrow was
+///               refunded back to the sender)
 ///   Disputed  → Delivered (only via dispute resolution)
 ///   Disputed  → Resolved (only via dispute resolution, Issue #447)
 ///   Cancelled → (terminal, no transitions)
-///   Delivered → (terminal, no further transitions)
+///   Delivered → (terminal except for Disputed and the Issue #110 admin path above)
 ///   Resolved  → (terminal, no further transitions)
 pub fn validate_transition(from: DeliveryStatus, to: DeliveryStatus) -> Result<(), TrustchainError> {
     let valid = matches!(
@@ -159,6 +162,7 @@ pub fn validate_transition(from: DeliveryStatus, to: DeliveryStatus) -> Result<(
             | (DeliveryStatus::InTransit, DeliveryStatus::Disputed)
             | (DeliveryStatus::InTransit, DeliveryStatus::Cancelled)
             | (DeliveryStatus::Delivered, DeliveryStatus::Disputed)
+            | (DeliveryStatus::Delivered, DeliveryStatus::Cancelled)
             | (DeliveryStatus::Disputed, DeliveryStatus::Delivered)
             | (DeliveryStatus::Disputed, DeliveryStatus::Resolved)
     );
@@ -1264,7 +1268,10 @@ impl DeliveryContract {
             (DeliveryStatus::Resolved, shared_types::EscrowStatus::Released) => true,
             (DeliveryStatus::Resolved, shared_types::EscrowStatus::Split) => true,
 
-            // Cancelled: escrow should be Refunded
+            // Cancelled: escrow should be Refunded. This covers both the
+            // normal sender-initiated cancel path and the admin holdback-refund
+            // recovery path (Issue #110) that transitions Delivered → Cancelled
+            // while simultaneously refunding the escrow.
             (DeliveryStatus::Cancelled, shared_types::EscrowStatus::Refunded) => true,
 
             // Any other combination is a mismatch
@@ -1299,6 +1306,127 @@ impl DeliveryContract {
             panic_with_error!(&env, DeliveryError::InvalidIndexKind);
         }
         index_page(&env, owner, kind, offset, limit)
+    }
+
+    /// Admin recovery path that refunds a `Holdback` escrow back to the
+    /// sender and synchronises the delivery and driver reputation atomically
+    /// (Issue #110).
+    ///
+    /// **Why this entry point exists.**
+    /// `confirm_delivery` transitions the delivery to `Delivered`, awards the
+    /// driver a reputation point, and moves the escrow to `Holdback`. An admin
+    /// who then calls `escrow_contract::refund_escrow` directly can refund the
+    /// sender, but that call cannot touch the delivery record or the driver's
+    /// reputation: the escrow contract is not on the identity contract's
+    /// `AuthorizedContract` allowlist, and Soroban forbids the escrow from
+    /// re-entering itself via the identity contract's `is_paused` guard.
+    /// The result is an incoherent combined state: delivery `Delivered`, escrow
+    /// `Refunded`, driver profile showing one extra completion — and
+    /// `get_combined_state` returning `is_synchronized = false` indefinitely.
+    ///
+    /// **What this function does.**
+    /// 1. Calls `escrow_contract::refund_escrow` with the admin as caller.
+    ///    If that fails (wrong state, insufficient balance, etc.) the
+    ///    transaction reverts and nothing here is committed.
+    /// 2. Transitions the delivery `Delivered → Cancelled` (the new
+    ///    state-machine edge added in Issue #110).
+    /// 3. If a driver is assigned and an identity contract is configured,
+    ///    decrements the driver's reputation by one point. This reverses the
+    ///    credit awarded by `confirm_delivery`. The admin is an authorized
+    ///    caller here (delivery_contract is on the allowlist); the escrow
+    ///    contract is not.
+    ///
+    /// After this call `get_combined_state` reports `(Cancelled, Refunded,
+    /// true)` — a coherent terminal state.
+    ///
+    /// **Authorization:** Admin only.
+    #[allow(deprecated)] // events().publish() is deprecated in SDK 27; see SOROBAN_SDK_27_MIGRATION.md
+    pub fn admin_refund_holdback(env: Env, admin: Address, delivery_id: DeliveryId) {
+        admin.require_auth();
+        if !is_admin(&env, &admin) {
+            panic_with_error!(&env, TrustchainError::Unauthorized);
+        }
+
+        let key = delivery_key(delivery_id);
+        let mut delivery: DeliveryRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::DeliveryNotFound));
+
+        // Guard: delivery must be in Delivered state. Any other state means
+        // the escrow is not in Holdback and this recovery path does not apply.
+        if delivery.status != DeliveryStatus::Delivered {
+            panic_with_error!(&env, TrustchainError::InvalidState);
+        }
+
+        let escrow_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowContract)
+            .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::NotInitialized));
+
+        use soroban_sdk::IntoVal;
+
+        // ── 1. Refund the escrow (interaction before local state writes) ───
+        // The escrow contract validates that the escrow is in Holdback and
+        // that the caller is an admin; both conditions must hold. If either
+        // check fails the transaction reverts here and nothing below runs.
+        let _: () = env.invoke_contract(
+            &escrow_address,
+            &soroban_sdk::Symbol::new(&env, "refund_escrow"),
+            soroban_sdk::vec![
+                &env,
+                admin.into_val(&env),
+                u64::from(delivery_id).into_val(&env),
+            ],
+        );
+
+        // ── 2. Transition delivery Delivered → Cancelled ──────────────────
+        // validate_transition now permits Delivered → Cancelled for this path.
+        validate_transition(delivery.status, DeliveryStatus::Cancelled)
+            .unwrap_or_else(|_| panic_with_error!(&env, TrustchainError::InvalidState));
+
+        delivery.status = DeliveryStatus::Cancelled;
+        env.storage().persistent().set(&key, &delivery);
+        env.storage().persistent().extend_ttl(
+            &key,
+            ttl::LEDGER_TTL_THRESHOLD,
+            ttl::LEDGER_TTL_EXTEND_TO,
+        );
+
+        // ── 3. Reverse driver reputation ──────────────────────────────────
+        // Decrement by 1 to reverse the credit given at confirm_delivery.
+        // The delivery_contract IS on the identity contract's
+        // AuthorizedContract allowlist; the escrow contract is not, which is
+        // why this cannot be done from refund_escrow directly (Issue #468).
+        // We deliberately do not panic if the reputation call fails (e.g. the
+        // driver profile was deleted or the identity contract was rotated):
+        // the financial settlement and delivery-state correction already
+        // committed above are the primary invariants; reputation is secondary
+        // and should not undo a successful refund.
+        if let Some(driver_addr) = &delivery.driver {
+            if let Some(identity_contract) =
+                Self::get_identity_reputation_contract(env.clone())
+            {
+                let _result = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                    &identity_contract,
+                    &Symbol::new(&env, "decrease_reputation"),
+                    soroban_sdk::vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        driver_addr.into_val(&env),
+                        1u32.into_val(&env),
+                    ],
+                );
+            }
+        }
+
+        // ── 4. Emit event ──────────────────────────────────────────────────
+        env.events().publish(
+            (Symbol::new(&env, "holdback_admin_refunded"),),
+            (delivery_id, admin, delivery.sender),
+        );
     }
 
     /// Permissionless entry point that reclaims an expired escrow **and**

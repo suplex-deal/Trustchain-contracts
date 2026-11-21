@@ -846,7 +846,29 @@ pub struct EscrowRecord {
     /// holdback window has elapsed, so a passive recipient can no longer
     /// strand driver funds indefinitely (Issue #192).
     pub holdback_started_at: Option<u64>,
+    /// Absolute ledger timestamp before which `release_expired_holdback` must
+    /// not pay out. Set once — alongside `holdback_started_at` — when the
+    /// escrow enters `Holdback` via `mark_holdback_escrow`, and never updated
+    /// afterwards (Issue #109).
+    ///
+    /// Storing the computed deadline rather than recomputing it at claim time
+    /// (`holdback_started_at + current_global_HoldbackWindow`) means that a
+    /// later `set_holdback_window` call cannot shorten the recipient's dispute
+    /// window or extend the driver's wait for escrows that are already in
+    /// `Holdback`. Both parties see a stable, immutable deadline from the
+    /// moment delivery is confirmed.
+    pub holdback_deadline: Option<u64>,
     pub fleet_id: Option<u64>,
+    /// The effective fee in basis points that was computed and locked at
+    /// escrow-creation time (Issue #108). This is the volume-discounted fee
+    /// that applied to the sender at the moment funds were transferred into
+    /// the contract — i.e. `base_fee_bps` minus any matching `VolumeTier`
+    /// discount. All settlement paths (`release_escrow`, `settle_holdback_escrow`,
+    /// `resolve_dispute`, `resolve_dispute_split`) read this field directly
+    /// instead of querying the live `ProtocolConfig` and `VolumeTiers`, so
+    /// later admin fee changes and tier updates cannot retroactively alter
+    /// payouts for already-funded escrows.
+    pub locked_fee_bps: u32,
 }
 
 /// Lifecycle status for a driver profile.
@@ -1317,7 +1339,9 @@ mod test {
             disputed_by: Some(disputed_by.clone()),
             disputed_at: Some(7500000),
             holdback_started_at: Some(7200000),
+            holdback_deadline: Some(7200000 + 3 * 24 * 60 * 60),
             fleet_id: Some(42),
+            locked_fee_bps: 0,
         };
 
         assert_eq!(record.delivery_id, 42);
@@ -1332,6 +1356,7 @@ mod test {
         assert_eq!(record.disputed_by, Some(disputed_by));
         assert_eq!(record.disputed_at, Some(7500000));
         assert_eq!(record.holdback_started_at, Some(7200000));
+        assert_eq!(record.holdback_deadline, Some(7200000 + 3 * 24 * 60 * 60));
         assert_eq!(record.fleet_id, Some(42));
     }
 
