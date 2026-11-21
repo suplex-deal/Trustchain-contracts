@@ -2246,3 +2246,243 @@ fn test_accept_invite_unrestricted_without_identity_contract() {
         Some(DriverFleetStatus::Active)
     );
 }
+
+// ── Issue #125 — O(1) roster removal ─────────────────────────────────────────
+
+/// Removing the only driver in a fleet works via the index (no scan needed).
+#[test]
+fn test_removal_uses_roster_index_single_driver() {
+    let (env, client, _admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let driver = Address::generate(&env);
+    client.add_driver_to_fleet(&owner, &fleet_id, &driver, &no_co_signers(&env));
+    client.accept_fleet_invite(&fleet_id, &driver);
+
+    // After acceptance the index key must exist in storage.
+    env.as_contract(&client.address, || {
+        let idx: Option<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DriverRosterIndex(fleet_id, driver.clone()));
+        assert_eq!(idx, Some(0u32), "index must be written on accept");
+    });
+
+    client.remove_driver_from_fleet(&fleet_id, &owner, &driver, &no_co_signers(&env));
+
+    // After removal both the roster slot and the index entry must be gone.
+    env.as_contract(&client.address, || {
+        let slot: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FleetRoster(fleet_id, 0u32));
+        assert!(slot.is_none(), "roster slot must be removed");
+
+        let idx: Option<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DriverRosterIndex(fleet_id, driver.clone()));
+        assert!(idx.is_none(), "index entry must be removed");
+    });
+
+    assert_eq!(client.get_fleet(&fleet_id).total_active_drivers, 0);
+    assert!(client.get_fleet_roster(&fleet_id, &0u32, &100u32).is_empty());
+}
+
+/// Removing from the middle of a fleet compacts correctly: the last driver's
+/// index is updated to the vacated slot, so subsequent removals remain O(1).
+#[test]
+fn test_removal_compacts_roster_and_updates_swapped_driver_index() {
+    let (env, client, _admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let driver_a = Address::generate(&env);
+    let driver_b = Address::generate(&env);
+    let driver_c = Address::generate(&env);
+
+    for d in [&driver_a, &driver_b, &driver_c] {
+        client.add_driver_to_fleet(&owner, &fleet_id, d, &no_co_signers(&env));
+        client.accept_fleet_invite(&fleet_id, d);
+    }
+
+    assert_eq!(client.get_fleet(&fleet_id).total_active_drivers, 3);
+
+    // Remove driver_b (index 1). driver_c (index 2) must be swapped into slot 1
+    // and have its index updated to 1.
+    client.remove_driver_from_fleet(&fleet_id, &owner, &driver_b, &no_co_signers(&env));
+
+    env.as_contract(&client.address, || {
+        // driver_b's index entry must be gone.
+        let b_idx: Option<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DriverRosterIndex(fleet_id, driver_b.clone()));
+        assert!(b_idx.is_none(), "removed driver's index must be cleared");
+
+        // driver_c must now be at slot 1 (swapped in).
+        let c_idx: Option<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DriverRosterIndex(fleet_id, driver_c.clone()));
+        assert_eq!(c_idx, Some(1u32), "swapped driver index must be updated to 1");
+
+        // Slot 1 must hold driver_c.
+        let slot1: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FleetRoster(fleet_id, 1u32));
+        assert_eq!(slot1, Some(driver_c.clone()), "slot 1 must hold driver_c");
+
+        // Slot 2 must be cleared.
+        let slot2: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FleetRoster(fleet_id, 2u32));
+        assert!(slot2.is_none(), "vacated last slot must be removed");
+    });
+
+    assert_eq!(client.get_fleet(&fleet_id).total_active_drivers, 2);
+
+    // Removing driver_c (now at index 1) also works correctly.
+    client.remove_driver_from_fleet(&fleet_id, &owner, &driver_c, &no_co_signers(&env));
+    assert_eq!(client.get_fleet(&fleet_id).total_active_drivers, 1);
+
+    let roster = client.get_fleet_roster(&fleet_id, &0u32, &100u32);
+    assert_eq!(roster.len(), 1u32);
+    assert_eq!(roster.get(0).unwrap(), driver_a);
+}
+
+// ── Issue #123 — freeze removal on deactivated fleet ─────────────────────────
+
+/// Owner cannot remove a driver from a deactivated fleet.
+#[test]
+fn test_remove_driver_rejected_on_deactivated_fleet_owner() {
+    let (env, client, _admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let driver = Address::generate(&env);
+    client.add_driver_to_fleet(&owner, &fleet_id, &driver, &no_co_signers(&env));
+    client.accept_fleet_invite(&fleet_id, &driver);
+
+    client.deactivate_fleet(&owner, &fleet_id);
+
+    let result =
+        client.try_remove_driver_from_fleet(&fleet_id, &owner, &driver, &no_co_signers(&env));
+    match result {
+        Err(Ok(err)) => assert_eq!(err, FleetError::FleetInactive.into()),
+        _ => panic!("Expected FleetError::FleetInactive when removing from deactivated fleet"),
+    }
+
+    // The driver must still be Active and the roster unchanged.
+    assert_eq!(
+        client.get_driver_fleet_status(&fleet_id, &driver),
+        Some(DriverFleetStatus::Active)
+    );
+    assert_eq!(client.get_fleet(&fleet_id).total_active_drivers, 1);
+}
+
+/// A driver cannot self-remove from a deactivated fleet.
+#[test]
+fn test_remove_driver_rejected_on_deactivated_fleet_driver_self_exit() {
+    let (env, client, _admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let driver = Address::generate(&env);
+    client.add_driver_to_fleet(&owner, &fleet_id, &driver, &no_co_signers(&env));
+    client.accept_fleet_invite(&fleet_id, &driver);
+
+    client.deactivate_fleet(&owner, &fleet_id);
+
+    let result =
+        client.try_remove_driver_from_fleet(&fleet_id, &driver, &driver, &no_co_signers(&env));
+    match result {
+        Err(Ok(err)) => assert_eq!(err, FleetError::FleetInactive.into()),
+        _ => panic!("Expected FleetError::FleetInactive for driver self-exit on deactivated fleet"),
+    }
+
+    assert_eq!(
+        client.get_driver_fleet_status(&fleet_id, &driver),
+        Some(DriverFleetStatus::Active)
+    );
+}
+
+/// After reactivation removal should succeed again.
+#[test]
+fn test_remove_driver_succeeds_after_reactivation() {
+    let (env, client, _admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let driver = Address::generate(&env);
+    client.add_driver_to_fleet(&owner, &fleet_id, &driver, &no_co_signers(&env));
+    client.accept_fleet_invite(&fleet_id, &driver);
+
+    client.deactivate_fleet(&owner, &fleet_id);
+    client.reactivate_fleet(&owner, &fleet_id);
+
+    client.remove_driver_from_fleet(&fleet_id, &owner, &driver, &no_co_signers(&env));
+    assert_eq!(
+        client.get_driver_fleet_status(&fleet_id, &driver),
+        Some(DriverFleetStatus::Removed)
+    );
+}
+
+// ── Issue #124 — owner must be in signer set ─────────────────────────────────
+
+/// configure_signers rejects a signer set that excludes the fleet owner.
+#[test]
+fn test_configure_signers_rejects_signer_set_without_owner() {
+    let (env, client, _admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let signer_a = Address::generate(&env);
+    let signer_b = Address::generate(&env);
+
+    // Signer set that does not include `owner`.
+    let mut signers_without_owner = soroban_sdk::Vec::new(&env);
+    signers_without_owner.push_back(signer_a.clone());
+    signers_without_owner.push_back(signer_b.clone());
+
+    let result = client.try_configure_signers(
+        &owner,
+        &fleet_id,
+        &signers_without_owner,
+        &1u32,
+        &soroban_sdk::Vec::new(&env),
+    );
+    match result {
+        Err(Ok(err)) => assert_eq!(err, FleetError::InvalidConfiguration.into()),
+        _ => panic!("Expected FleetError::InvalidConfiguration when owner excluded from signers"),
+    }
+
+    // The signer set must be unchanged (owner still the only signer).
+    let (signers, threshold) = client.get_fleet_signers(&fleet_id);
+    assert_eq!(signers.len(), 1u32);
+    assert_eq!(signers.get(0).unwrap(), owner);
+    assert_eq!(threshold, 1u32);
+}
+
+/// configure_signers accepts a signer set that includes the owner.
+#[test]
+fn test_configure_signers_accepts_signer_set_with_owner() {
+    let (env, client, _admin) = setup_test();
+    let (fleet_id, owner, _treasury) = register_fleet(&env, &client);
+
+    let signer_a = Address::generate(&env);
+    let mut signers = soroban_sdk::Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer_a.clone());
+
+    client.configure_signers(
+        &owner,
+        &fleet_id,
+        &signers,
+        &1u32,
+        &soroban_sdk::Vec::new(&env),
+    );
+
+    let (stored_signers, threshold) = client.get_fleet_signers(&fleet_id);
+    assert_eq!(stored_signers.len(), 2u32);
+    assert!(stored_signers.contains(&owner));
+    assert!(stored_signers.contains(&signer_a));
+    assert_eq!(threshold, 1u32);
+}

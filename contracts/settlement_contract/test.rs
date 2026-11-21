@@ -429,3 +429,130 @@ fn test_execute_settlement_swap_rejects_deadline_beyond_window() {
     );
     assert!(expired.is_err());
 }
+
+// ── Issue #132 — swap_router_updated event ────────────────────────────────────
+
+/// set_swap_router emits a swap_router_updated event with admin, old router
+/// (None on first set), and new router (Issue #132).
+#[test]
+fn test_set_swap_router_emits_event_first_time() {
+    use soroban_sdk::{
+        testutils::Events,
+        xdr::ContractEventBody,
+        TryFromVal,
+    };
+    use shared_types::SwapRouterUpdatedEvent;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let escrow = Address::generate(&env);
+    client.init(&admin, &escrow);
+
+    let router = Address::generate(&env);
+    client.set_swap_router(&admin, &router);
+
+    // Decode the last event.
+    let events = env.events().all();
+    let raw = events.events().last().expect("no events emitted").clone();
+    let ContractEventBody::V0(body) = raw.body;
+
+    let topic0: Symbol =
+        Symbol::try_from_val(&env, body.topics.get(0).unwrap()).expect("topic decode");
+    assert_eq!(topic0, Symbol::new(&env, "swap_router_updated"));
+
+    let data: SwapRouterUpdatedEvent =
+        SwapRouterUpdatedEvent::try_from_val(&env, &body.data).expect("data decode");
+    assert_eq!(data.admin, admin);
+    assert_eq!(data.old_router, None);
+    assert_eq!(data.new_router, router);
+}
+
+/// A second call to set_swap_router emits the event with the previous router
+/// as old_router and the new one as new_router.
+#[test]
+fn test_set_swap_router_emits_event_with_old_router() {
+    use soroban_sdk::{
+        testutils::Events,
+        xdr::ContractEventBody,
+        TryFromVal,
+    };
+    use shared_types::SwapRouterUpdatedEvent;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let escrow = Address::generate(&env);
+    client.init(&admin, &escrow);
+
+    let first_router = Address::generate(&env);
+    let second_router = Address::generate(&env);
+
+    client.set_swap_router(&admin, &first_router);
+    client.set_swap_router(&admin, &second_router);
+
+    // Decode the last event (from the second set_swap_router call).
+    let events = env.events().all();
+    let raw = events.events().last().expect("no events emitted").clone();
+    let ContractEventBody::V0(body) = raw.body;
+
+    let topic0: Symbol =
+        Symbol::try_from_val(&env, body.topics.get(0).unwrap()).expect("topic decode");
+    assert_eq!(topic0, Symbol::new(&env, "swap_router_updated"));
+
+    let data: SwapRouterUpdatedEvent =
+        SwapRouterUpdatedEvent::try_from_val(&env, &body.data).expect("data decode");
+    assert_eq!(data.admin, admin);
+    assert_eq!(data.old_router, Some(first_router));
+    assert_eq!(data.new_router, second_router);
+}
+
+/// set_swap_router is restricted to the contract admin.
+#[test]
+fn test_set_swap_router_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let escrow = Address::generate(&env);
+    client.init(&admin, &escrow);
+
+    let non_admin = Address::generate(&env);
+    let router = Address::generate(&env);
+
+    let result = client.try_set_swap_router(&non_admin, &router);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, TrustchainError::Unauthorized.into()),
+        _ => panic!("Expected Unauthorized for non-admin set_swap_router"),
+    }
+
+    // No router must have been set.
+    assert_eq!(client.get_swap_router(), None);
+}
+
+/// After a successful set_swap_router the getter returns the stored address.
+#[test]
+fn test_set_swap_router_stores_and_returns_router() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let escrow = Address::generate(&env);
+    client.init(&admin, &escrow);
+
+    let router = Address::generate(&env);
+    client.set_swap_router(&admin, &router);
+
+    assert_eq!(client.get_swap_router(), Some(router));
+}
+

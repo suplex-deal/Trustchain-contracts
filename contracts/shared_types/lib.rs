@@ -102,6 +102,8 @@ pub mod events {
     pub const ADMIN_TRANSFERRED: &str = "admin_transferred";
     pub const PROTOCOL_PAUSE_STATUS_CHANGED: &str = "protocol_pause_status_changed";
     pub const DELIVERY_CONTRACT_INITIALIZED: &str = "delivery_contract_initialized";
+    /// Emitted by `settlement_contract::set_swap_router` (Issue #132).
+    pub const SWAP_ROUTER_UPDATED: &str = "swap_router_updated";
 
     pub fn delivery_created(env: &Env) -> Symbol {
         Symbol::new(env, DELIVERY_CREATED)
@@ -318,6 +320,10 @@ pub mod events {
         Symbol::new(env, ADMIN_TRANSFERRED)
     }
 
+    pub fn swap_router_updated(env: &Env) -> Symbol {
+        Symbol::new(env, SWAP_ROUTER_UPDATED)
+    }
+
     pub fn admin_proposed(env: &Env) -> Symbol {
         Symbol::new(env, "admin_proposed")
     }
@@ -341,6 +347,26 @@ pub mod ttl {
 }
 
 pub const SETTLEMENT_SWAP_DEADLINE_WINDOW_SECONDS: u64 = 300;
+
+/// Delay between proposing a peer-contract address change (escrow, delivery,
+/// identity, or settlement) and it becoming eligible for confirmation. The
+/// three-day window gives operators and drivers advance notice before a
+/// critical cross-contract address is rotated.
+pub const PEER_CONTRACT_CHANGE_TIMELOCK_SECONDS: u64 = 3 * 24 * 60 * 60; // 3 days
+
+/// A proposed peer-contract address change that has not yet been confirmed.
+/// Stored transiently until `confirm_*` finalises it or it is replaced by a
+/// new proposal.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingPeerContractChange {
+    /// New contract address being proposed.
+    pub address: Address,
+    /// Admin address that submitted the proposal.
+    pub proposed_by: Address,
+    /// Ledger timestamp after which the change may be confirmed.
+    pub activates_at: u64,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -643,6 +669,20 @@ pub struct EscrowContractUpdatedEvent {
     pub admin: Address,
     /// New escrow contract address.
     pub new_escrow: Address,
+}
+
+/// Emitted by `settlement_contract::set_swap_router` every time the privileged
+/// swap-router address changes so off-chain monitors can observe routing changes
+/// without polling storage (Issue #132).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapRouterUpdatedEvent {
+    /// Admin address that performed the update.
+    pub admin: Address,
+    /// Previous router address (`None` when no router was configured before).
+    pub old_router: Option<Address>,
+    /// New router address.
+    pub new_router: Address,
 }
 
 #[contracttype]
@@ -1438,6 +1478,7 @@ mod test {
             ADMIN_TRANSFERRED => admin_transferred,
             PROTOCOL_PAUSE_STATUS_CHANGED => protocol_pause_status_changed,
             DELIVERY_CONTRACT_INITIALIZED => delivery_contract_initialized,
+            SWAP_ROUTER_UPDATED => swap_router_updated,
         }
     }
 }

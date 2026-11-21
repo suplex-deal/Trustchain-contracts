@@ -1,14 +1,15 @@
 #![no_std]
 
 use shared_types::{
-    DriverPreferenceUpdatedEvent, EscrowContractUpdatedEvent, TrustchainError,
-    PendingPeerContractChange, StorageKey,
+    is_admin, DriverPreferenceUpdatedEvent, EscrowContractUpdatedEvent, SwapRouterUpdatedEvent,
+    TrustchainError, PendingPeerContractChange, StorageKey,
 };
 
 // Settlement contract for cross-border currency swaps through an admin-configured router.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, IntoVal,
+    Symbol,
 };
 
 #[contracttype]
@@ -16,6 +17,8 @@ use soroban_sdk::{
 pub enum DataKey {
     EscrowContract,
     PendingEscrowContract,
+    /// Trusted swap-router contract address set via `set_swap_router`.
+    SwapRouter,
     /// Per-driver preferred payout asset recorded via
     /// `set_driver_preference` (Issue #459).
     DriverPreference(Address),
@@ -148,15 +151,28 @@ impl SettlementContract {
     ///
     /// The router must implement `swap_exact_tokens_for_tokens` with the
     /// argument and return-value contract used by `execute_settlement_swap`.
+    ///
+    /// Emits `swap_router_updated` with actor, old router, and new router so
+    /// off-chain monitors can observe every routing change without polling
+    /// storage (Issue #132).
     pub fn set_swap_router(env: Env, admin: Address, router: Address) {
         admin.require_auth();
         if !is_admin(&env, &admin) {
             panic_with_error!(&env, TrustchainError::Unauthorized);
         }
+        let old_router: Option<Address> = env.storage().instance().get(&DataKey::SwapRouter);
         env.storage().instance().set(&DataKey::SwapRouter, &router);
         env.storage().instance().extend_ttl(
             shared_types::ttl::LEDGER_TTL_THRESHOLD,
             shared_types::ttl::LEDGER_TTL_EXTEND_TO,
+        );
+        env.events().publish(
+            (shared_types::events::swap_router_updated(&env),),
+            SwapRouterUpdatedEvent {
+                admin,
+                old_router,
+                new_router: router,
+            },
         );
     }
 
