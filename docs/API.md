@@ -2054,6 +2054,47 @@ Return the forced-resolution timeout used by `force_resolve_dispute`.
 
 **Returns:** `u64`
 
+#### `get_pending_resolution`
+Read-only view of the verdict currently awaiting a second high-value approval
+(Issue #114). When a resolution entry point (`resolve_dispute_refund_sender`,
+`resolve_dispute_pay_driver`, or `resolve_dispute_split_funds`) is first called
+for an escrow of at least 1,000,000 raw token units, the proposed verdict is
+queued in `DataKey::PendingResolution` without moving funds. This getter exposes
+that queued proposal so a second admin can inspect the exact outcome — and the
+first approver — before signing it.
+
+**Parameters:**
+- `delivery_id: DeliveryId` - Delivery identifier
+
+**Authorization:** None required
+
+**Returns:** `Option<PendingResolution>` — `None` when no proposal is queued
+for this delivery (no high-value resolution has been proposed, or the queued
+verdict has already been executed or superseded). When present, the returned
+value carries:
+- `approver: Address` — the first admin who proposed the verdict
+- `verdict: ResolutionVerdict` — the exact queued outcome (refund, payout, or
+  split with its `sender_share_bps`)
+
+**Notes:**
+- The view is read-only; it exposes no mutable internals and moves no funds.
+- A second admin should call this before approving and compare the returned
+  `verdict` against the outcome they intend to sign. If the proposal has been
+  replaced since it was first observed, the returned `verdict` (or `approver`)
+  will differ, letting the second admin detect a changed proposal.
+- The same verdict is also emitted in the `resolution_approval_requested` event
+  (see [Events](#events-1)) so off-chain monitors can track pending approvals.
+
+**Example:**
+```rust
+match dispute_contract.get_pending_resolution(&delivery_id) {
+    Some(pending) => {
+        // Inspect pending.approver and pending.verdict before approving.
+    }
+    None => { /* nothing queued for this delivery */ }
+}
+```
+
 #### `get_dispute`
 Retrieve a full dispute record by delivery ID.
 
@@ -3627,6 +3668,12 @@ All events are defined in `shared_types::events`:
 - `delivery_disputed` - Dispute raised
 - `escrow_refunded` - Funds returned to sender
 - `dispute_resolved` - Dispute resolved by admin
+- `resolution_approval_requested` - A high-value verdict was queued awaiting a
+  second admin approval. Payload: `(delivery_id, caller, amount, verdict)`,
+  where `verdict` is the exact queued `ResolutionVerdict` (refund, payout, or
+  split with its `sender_share_bps`). Including the verdict lets a second admin
+  and off-chain monitors inspect the pending outcome from event data alone,
+  without a separate contract query (Issue #114).
 
 ---
 

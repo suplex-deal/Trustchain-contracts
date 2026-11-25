@@ -297,6 +297,44 @@ function hexEncode(value: unknown): string {
   throw new TypeError(`Expected a byte buffer evidence hash, received ${typeof value}`);
 }
 
+function decodePendingResolution(value: unknown): DisputeResolutionTypes.PendingResolution | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const verdict = record.verdict as Record<string, unknown> | undefined;
+  if (!verdict) {
+    return undefined;
+  }
+  const decoded: DisputeResolutionTypes.PendingResolution = {
+    approver: String(record.approver),
+    verdict: decodeResolutionVerdict(verdict),
+  };
+  return decoded;
+}
+
+function decodeResolutionVerdict(value: Record<string, unknown>): DisputeResolutionTypes.ResolutionVerdict {
+  // Soroban enums surface as either a bare variant name or a single-key object.
+  const raw = value.verdict ?? value;
+  const variant = typeof raw === 'string' ? raw : Object.keys(raw as Record<string, unknown>)[0];
+  switch (variant) {
+    case 'RefundSender':
+    case 'refund_sender':
+      return { type: 'RefundSender' };
+    case 'PayDriver':
+    case 'pay_driver':
+      return { type: 'PayDriver' };
+    case 'SplitFunds':
+    case 'split_funds': {
+      const payload = (raw as Record<string, unknown>).SplitFunds ?? (raw as Record<string, unknown>).split_funds ?? raw;
+      const share = (payload as Record<string, unknown>).sender_share_bps ?? (payload as Record<string, unknown>).senderShareBps;
+      return { type: 'SplitFunds', senderShareBps: Number(share) };
+    }
+    default:
+      throw new TypeError(`Unknown resolution verdict variant: ${String(variant)}`);
+  }
+}
+
 function decodeDispute(value: unknown): DisputeCase {
   const record = value as Record<string, unknown>;
   return {

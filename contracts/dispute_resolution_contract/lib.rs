@@ -187,17 +187,21 @@ pub enum DataKey {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ResolutionVerdict {
+pub enum ResolutionVerdict {
     RefundSender,
     PayDriver,
     Split(u32),
 }
 
+/// A high-value resolution awaiting a second admin's approval (Issue #114).
+///
+/// Exposed read-only through `get_pending_resolution` so a second admin can
+/// inspect the exact queued verdict and the first approver before signing.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PendingResolution {
-    approver: Address,
-    verdict: ResolutionVerdict,
+pub struct PendingResolution {
+    pub approver: Address,
+    pub verdict: ResolutionVerdict,
 }
 
 /// Number of dispute IDs stored per index page.  Matches the paging
@@ -295,7 +299,7 @@ impl DisputeResolutionContract {
                 Symbol::new(env, "resolution_approval_requested"),
                 delivery_id,
             ),
-            (caller.clone(), escrow_amount),
+            (caller.clone(), escrow_amount, verdict),
         );
         false
     }
@@ -1830,6 +1834,24 @@ impl DisputeResolutionContract {
             .persistent()
             .get(&dispute_key)
             .unwrap_or_else(|| panic_with_error!(&env, TrustchainError::DeliveryNotFound))
+    }
+
+    /// Return the high-value resolution currently awaiting a second admin
+    /// approval for `delivery_id`, or `None` when nothing is pending
+    /// (Issue #114).
+    ///
+    /// The returned `PendingResolution` carries the first approver and the
+    /// exact queued verdict, so a second admin can inspect the outcome they
+    /// are about to co-sign — and detect a proposal that changed since they
+    /// last looked — before calling the matching resolution entry point.
+    /// Read-only and requires no authorization.
+    pub fn get_pending_resolution(
+        env: Env,
+        delivery_id: DeliveryId,
+    ) -> Option<PendingResolution> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingResolution(delivery_id))
     }
 }
 

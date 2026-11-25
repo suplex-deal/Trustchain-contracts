@@ -1013,6 +1013,237 @@ fn test_high_value_dispute_requires_two_distinct_mediators() {
     );
 }
 
+// ── PENDING RESOLUTION OBSERVABILITY (Issue #114) ────────────────────────────
+
+/// Helper: raise a high-value dispute (escrow amount at the threshold) so the
+/// first resolution approval is queued instead of applied.
+fn raise_high_value_dispute(
+    env: &Env,
+    sender: &Address,
+    recipient: &Address,
+    driver: &Address,
+    delivery_contract: &Address,
+    escrow_contract: &Address,
+    dispute_client: &DisputeResolutionContractClient,
+    delivery_id: DeliveryId,
+) {
+    let mut delivery_record = create_mock_delivery_record(
+        env,
+        delivery_id,
+        sender.clone(),
+        recipient.clone(),
+        DeliveryStatus::Active,
+        None,
+    );
+    delivery_record.driver = Some(driver.clone());
+    set_mock_delivery(env, delivery_contract, delivery_id, &delivery_record);
+
+    let mut escrow_record = create_mock_escrow_record(
+        sender.clone(),
+        recipient.clone(),
+        driver.clone(),
+        Address::generate(env),
+        shared_types::EscrowStatus::Paused,
+    );
+    escrow_record.amount = HIGH_VALUE_DISPUTE_THRESHOLD;
+    set_mock_escrow(env, escrow_contract, u64::from(delivery_id), &escrow_record);
+
+    dispute_client.raise_dispute(sender, &delivery_id);
+}
+
+/// Issue #114: after the first high-value approval the queued verdict and the
+/// first approver are independently inspectable through a read-only getter.
+#[test]
+fn test_pending_resolution_view_exposes_verdict_and_first_approver() {
+    let (env, admin, sender, recipient, driver, delivery_id, escrow_id, dispute_client) =
+        setup_test();
+    let second_admin = Address::generate(&env);
+    bootstrap_admin(&dispute_client, &admin, &second_admin);
+
+    raise_high_value_dispute(
+        &env,
+        &sender,
+        &recipient,
+        &driver,
+        &delivery_id,
+        &escrow_id,
+        &dispute_client,
+        did(41),
+    );
+
+    // Nothing is queued before the first approval.
+    assert!(dispute_client.get_pending_resolution(&did(41)).is_none());
+
+    dispute_client.resolve_dispute_refund_sender(&admin, &did(41));
+
+    // The resolution is not applied yet...
+    assert_eq!(
+        dispute_client.get_dispute(&did(41)).status,
+        DisputeStatus::Open
+    );
+
+    // ...but the queued proposal is fully inspectable.
+    let pending = dispute_client
+        .get_pending_resolution(&did(41))
+        .expect("pending resolution should be recorded after the first approval");
+    assert_eq!(pending.approver, admin);
+    assert_eq!(pending.verdict, DisputeStatus::ResolvedRefund);
+}
+
+/// Issue #114: the getter returns `None` for a dispute with no queued
+/// resolution, including one that was never raised.
+#[test]
+fn test_pending_resolution_view_is_none_without_proposal() {
+    let (env, admin, sender, recipient, driver, delivery_id, escrow_id, dispute_client) =
+        setup_test();
+
+    // Never-raised dispute.
+    assert!(dispute_client.get_pending_resolution(&did(42)).is_none());
+
+    // Low-value dispute: the single approval applies immediately, so no
+    // pending entry is ever recorded.
+    let mut delivery_record = create_mock_delivery_record(
+        &env,
+        did(42),
+        sender.clone(),
+        recipient.clone(),
+        DeliveryStatus::Active,
+        None,
+    );
+    delivery_record.driver = Some(driver.clone());
+    set_mock_delivery(&env, &delivery_id, did(42), &delivery_record);
+    let escrow_record = create_mock_escrow_record(
+        sender.clone(),
+        recipient.clone(),
+        driver.clone(),
+        Address::generate(&env),
+        shared_types::EscrowStatus::Paused,
+    );
+    set_mock_escrow(&env, &escrow_id, 42, &escrow_record);
+    dispute_client.raise_dispute(&sender, &did(42));
+    dispute_client.resolve_dispute_refund_sender(&admin, &did(42));
+
+    assert_eq!(
+        dispute_client.get_dispute(&did(42)).status,
+        DisputeStatus::ResolvedRefund
+    );
+    assert!(dispute_client.get_pending_resolution(&did(42)).is_none());
+}
+
+/// Issue #114: `resolution_approval_requested` carries the queued verdict so
+/// off-chain observers can see the exact pending outcome before signing.
+#[test]
+fn test_resolution_approval_requested_event_includes_verdict() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let driver = Address::generate(&env);
+
+    let delivery_id = env.register(MockDeliveryContract, ());
+    let escrow_id = env.register(MockEscrowContract, ());
+    let dispute_id = env.register(DisputeResolutionContract, ());
+    let dispute_client = DisputeResolutionContractClient::new(&env, &dispute_id);
+    dispute_client.init(&admin, &delivery_id, &escrow_id, &86400, &604800);
+
+    raise_high_value_dispute(
+        &env,
+        &sender,
+        &recipient,
+        &driver,
+        &delivery_id,
+        &escrow_id,
+        &dispute_client,
+        did(43),
+    );
+
+    dispute_client.resolve_dispute_refund_sender(&admin, &did(43));
+
+    let (topics, data) = last_event(&env);
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic0, Symbol::new(&env, "resolution_approval_requested"));
+
+    let (event_caller, event_verdict): (Address, DisputeStatus) =
+        <(Address, DisputeStatus)>::try_from_val(&env, &data)
+            .expect("event data should decode as (caller, verdict)");
+    assert_eq!(event_caller, admin);
+    assert_eq!(event_verdict, DisputeStatus::ResolvedRefund);
+}
+
+/// Issue #114: a second admin proposing a different verdict replaces the
+/// pending entry (so a changed proposal is detectable) and does not complete
+/// the resolution.
+#[test]
+fn test_pending_resolution_replaced_by_different_verdict() {
+    let (env, admin, sender, recipient, driver, delivery_id, escrow_id, dispute_client) =
+        setup_test();
+    let second_admin = Address::generate(&env);
+    bootstrap_admin(&dispute_client, &admin, &second_admin);
+
+    raise_high_value_dispute(
+        &env,
+        &sender,
+        &recipient,
+        &driver,
+        &delivery_id,
+        &escrow_id,
+        &dispute_client,
+        did(44),
+    );
+
+    dispute_client.resolve_dispute_refund_sender(&admin, &did(44));
+    let pending = dispute_client.get_pending_resolution(&did(44)).unwrap();
+    assert_eq!(pending.approver, admin);
+    assert_eq!(pending.verdict, DisputeStatus::ResolvedRefund);
+
+    // A different verdict from another admin replaces the queued proposal.
+    dispute_client.resolve_dispute_pay_driver(&second_admin, &did(44));
+
+    let pending = dispute_client.get_pending_resolution(&did(44)).unwrap();
+    assert_eq!(pending.approver, second_admin);
+    assert_eq!(pending.verdict, DisputeStatus::ResolvedPayout);
+
+    // The resolution is still not applied.
+    assert_eq!(
+        dispute_client.get_dispute(&did(44)).status,
+        DisputeStatus::Open
+    );
+}
+
+/// Issue #114: a matching second approval from a different admin completes the
+/// resolution and clears the pending entry.
+#[test]
+fn test_pending_resolution_cleared_after_matching_second_approval() {
+    let (env, admin, sender, recipient, driver, delivery_id, escrow_id, dispute_client) =
+        setup_test();
+    let second_admin = Address::generate(&env);
+    bootstrap_admin(&dispute_client, &admin, &second_admin);
+
+    raise_high_value_dispute(
+        &env,
+        &sender,
+        &recipient,
+        &driver,
+        &delivery_id,
+        &escrow_id,
+        &dispute_client,
+        did(45),
+    );
+
+    dispute_client.resolve_dispute_refund_sender(&admin, &did(45));
+    assert!(dispute_client.get_pending_resolution(&did(45)).is_some());
+
+    dispute_client.resolve_dispute_refund_sender(&second_admin, &did(45));
+
+    assert_eq!(
+        dispute_client.get_dispute(&did(45)).status,
+        DisputeStatus::ResolvedRefund
+    );
+    assert!(dispute_client.get_pending_resolution(&did(45)).is_none());
+}
+
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #1)")] // TrustchainError::Unauthorized
 fn test_unauthorized_resolve_dispute_fails() {
